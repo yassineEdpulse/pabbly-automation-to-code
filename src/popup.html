@@ -1,36 +1,52 @@
-<div class="wrap">
-  <header>
-    <h1>Pabbly → Code Extractor</h1>
-    <span id="status" class="status">idle</span>
-  </header>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="popup.css" />
+    <title>Pabbly Code Extractor</title>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>
+          <span>Pabbly</span>
+          <svg class="title-arrow" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 12h15M13 6l6 6-6 6" />
+          </svg>
+          <span>Code Extractor</span>
+        </h1>
+        <span id="status" class="status">idle</span>
+      </header>
 
-  <div class="row">
-    <button type="button" id="refresh" class="primary">Capture / Refresh</button>
-    <button type="button" id="clear" class="ghost">Clear</button>
-  </div>
+      <div class="row">
+        <button type="button" id="refresh" class="primary">Capture / Refresh</button>
+        <button type="button" id="clear" class="ghost">Clear</button>
+      </div>
 
-  <div class="row">
-    <button type="button" id="captureSteps">Auto-capture steps (this workflow)</button>
-  </div>
+      <div class="row">
+        <button type="button" id="captureSteps">Auto-capture steps (this workflow)</button>
+      </div>
 
-  <div class="row">
-    <button type="button" id="exportAll" class="primary">Export ALL workflows</button>
-  </div>
+      <div class="row">
+        <button type="button" id="exportAll" class="primary">Export ALL workflows</button>
+      </div>
 
-  <div id="bulk" class="bulk"></div>
+      <div id="bulk" class="bulk"></div>
 
-  <div id="inventory" class="inventory"></div>
+      <div id="inventory" class="inventory"></div>
 
-  <input id="search" class="search" type="search" placeholder="Search workflows…" autocomplete="off" />
+      <input id="search" class="search" type="search" placeholder="Search workflows…" autocomplete="off" />
 
-  <div id="list" class="list"></div>
+      <div id="list" class="list"></div>
 
-  <div class="row footer">
-    <button type="button" id="copyRaw" class="ghost">Copy raw captures</button>
-    <button type="button" id="dlRaw" class="ghost">Download raw</button>
-  </div>
+      <div class="row footer">
+        <button type="button" id="copyRaw" class="ghost">Copy raw captures</button>
+        <button type="button" id="dlRaw" class="ghost">Download raw</button>
+      </div>
 
-  <pre id="preview" class="preview"></pre>
-</div>
-<link rel="stylesheet" href="popup.css" />
-<script type="module" src="popup.js"></script>
+      <pre id="preview" class="preview"></pre>
+    </div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

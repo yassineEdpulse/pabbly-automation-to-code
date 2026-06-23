@@ -34,7 +34,7 @@ const activeTab = async () => {
 
 const isPabbly = (tab) => tab && /pabbly\.com/.test(tab.url || "");
 
-const EXPECTED_CONTENT_VERSION = "0.8.9";
+const EXPECTED_CONTENT_VERSION = "0.9.2";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });
@@ -81,7 +81,7 @@ const copy = async (text, btn) => {
   await navigator.clipboard.writeText(text);
   if (!btn) return;
   const old = btn.textContent;
-  btn.textContent = "Copied ✓";
+  btn.textContent = "Copied";
   setTimeout(() => (btn.textContent = old), 1200);
 };
 
@@ -105,6 +105,24 @@ const el = (tag, props = {}, children = []) => {
   children.forEach((c) => node.appendChild(c));
   return node;
 };
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const makeIcon = (d, size = 13) => {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", size);
+  svg.setAttribute("height", size);
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.6");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
+};
+const ICON_DOWNLOAD = "M8 2.5v7M5 7l3 3 3-3M3 13h10";
 
 const countAllSteps = (steps) => {
   let n = 0;
@@ -131,7 +149,8 @@ const buildCard = (wf) => {
     copy(exportJson(wf), exportBtn);
   });
 
-  const dlBtn = el("button", { type: "button", className: "ghost", title: "Download JSON", textContent: "⬇" });
+  const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download JSON" });
+  dlBtn.appendChild(makeIcon(ICON_DOWNLOAD));
   dlBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     download(exportJson(wf), `${safeName(wf.name)}.json`);
@@ -185,7 +204,8 @@ const renderInventory = () => {
   copyBtn.addEventListener("click", (e) =>
     copy(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), e.target)
   );
-  const dlBtn = el("button", { type: "button", className: "ghost", title: "Download list", textContent: "⬇" });
+  const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download list" });
+  dlBtn.appendChild(makeIcon(ICON_DOWNLOAD));
   dlBtn.addEventListener("click", () =>
     download(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), "pabbly-workflow-inventory.json")
   );
@@ -372,9 +392,15 @@ $("refresh").addEventListener("click", refresh);
 $("clear").addEventListener("click", async () => {
   const tab = await activeTab();
   if (tab) await chrome.storage.session.remove(`captures_${tab.id}`);
+  await sendRuntime({ type: "clearBulk" });
+  if (bulkTimer) {
+    clearInterval(bulkTimer);
+    bulkTimer = null;
+  }
   state = { workflows: [], captures: [], dom: null, selectedId: null, query: searchEl.value };
   setStatus("cleared");
   inventoryEl.textContent = "";
+  bulkEl.textContent = "";
   renderList();
   previewEl.textContent = "";
 });

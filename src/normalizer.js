@@ -102,7 +102,7 @@ const hostOf = (url) => {
 const confidenceOf = (score) => (score >= 8 ? "high" : score >= 4 ? "medium" : "low");
 
 export const SYSTEM_PROMPT =
-  "This JSON was produced by the \"Pabbly → Code Extractor\" browser extension. It captured a single " +
+  "This JSON was produced by the \"Pabbly Code Extractor\" browser extension. It captured a single " +
   "Pabbly Connect automation directly from the live workflow page (by recording the JSON the Pabbly API " +
   "returned and supplementing it with the on-screen layout). The goal of this file is to let you understand " +
   "exactly what the automation does. Read it as follows:\n" +
@@ -111,8 +111,14 @@ export const SYSTEM_PROMPT =
   "- `schema.steps[]`: the ordered steps of the automation. Each step has: `order` (sequence), `type` " +
   "(trigger | action | router | filter), `app` (the connected app/service), `event` (the specific action/" +
   "trigger event chosen in that app), `mappings` (the configured input fields as field/value pairs).\n" +
-  "- In `mappings`, values written like `{{1.email}}` or `{{2.name}}` are references that pull data from an " +
-  "earlier step's output, where the leading number is that step's `order`.\n" +
+  "- DYNAMIC REFERENCES: inside `mappings` values, `filter` fields, and code, Pabbly embeds references to " +
+  "earlier steps' outputs, rendered as `N. Label : sampleValue` — e.g. `1. Events : [...]`, " +
+  "`7. User Email : a@b.com`, `2. Data 0 Subject Service Id : 948357`. The leading number `N` is the source " +
+  "step's `order`, `Label` is the output field path (spaces denote nesting, e.g. `Data 0 Subject Service Id` " +
+  "= data[0].subject.service.id), and the text AFTER the colon is only the SAMPLE value captured during a " +
+  "test run — NOT a constant. When generating code, treat these as references to step N's output (e.g. " +
+  "`const userEmail = step7.user.email`), never hard-code the sample. A mapping that contains such references " +
+  "also carries a `references` array listing the detected `{ step, field }` pairs.\n" +
   "- Some steps (especially Filter and Router) also have a `text` field: the raw on-screen text of that " +
   "step's config. When `mappings` is empty or unclear, read `text` for the literal conditions/operators " +
   "(e.g. \"Equal to\", \"Exists\").\n" +
@@ -165,7 +171,7 @@ export const detectWorkflows = (captures) => {
 };
 
 export const INVENTORY_SYSTEM_PROMPT =
-  "This JSON was produced by the \"Pabbly → Code Extractor\" browser extension. It is the full inventory of " +
+  "This JSON was produced by the \"Pabbly Code Extractor\" browser extension. It is the full inventory of " +
   "Pabbly Connect automations (workflows) found in the account's workflow-switcher dropdown. Each entry has a " +
   "`name`, an internal `id`, and the `webhookUrl` that triggers it. This is a catalog only — it does not " +
   "contain the steps of each workflow. To get a single workflow's full step detail, open that workflow in " +
@@ -174,7 +180,7 @@ export const INVENTORY_SYSTEM_PROMPT =
 export const buildInventoryExport = (inventory, source) => ({
   systemPrompt: INVENTORY_SYSTEM_PROMPT,
   extension: {
-    name: "Pabbly → Code Extractor",
+    name: "Pabbly Code Extractor",
     version: "0.8.9",
     purpose: "Lists every Pabbly Connect automation in the account.",
     capturedFrom: source || null
@@ -260,19 +266,22 @@ export const domWorkflow = (dom) => {
 };
 
 export const BULK_SYSTEM_PROMPT =
-  "This JSON was produced by the \"Pabbly → Code Extractor\" browser extension. It contains MANY Pabbly " +
+  "This JSON was produced by the \"Pabbly Code Extractor\" browser extension. It contains MANY Pabbly " +
   "Connect automations captured in one bulk pass. `workflows[]` is the list; each entry has `workflowName`, " +
   "`source`, `confidence`, and `steps[]`. Each step has `order`, `type` (trigger | action | router | filter), " +
   "`app`, `event`, `mappings` (configured fields as field/value pairs), and usually `text` (the raw on-screen " +
-  "text of that step's config). Values like `{{1.email}}` reference an earlier step's output by its `order`. " +
-  "When `mappings` is empty or incomplete (common for Filter and Router steps), read `text` — it contains the " +
-  "literal conditions/operators shown in the UI (e.g. \"Equal to\", \"Exists\"). Your task is only to " +
-  "understand these automations and explain them accurately. Do not write code unless explicitly asked later.";
+  "text of that step's config). DYNAMIC REFERENCES: mapping values, filter fields, and code embed references " +
+  "to earlier steps rendered as `N. Label : sampleValue` (e.g. `7. User Email : a@b.com`) — `N` is the source " +
+  "step's `order`, `Label` is the output field path, and the text after the colon is only the captured SAMPLE, " +
+  "not a constant; treat these as references to step N's output when coding. Mappings with such references " +
+  "also carry a `references` array of `{ step, field }`. When `mappings` is empty or incomplete (common for " +
+  "Filter and Router steps), read `text` for the literal conditions/operators (e.g. \"Equal to\", \"Exists\"). " +
+  "Your task is only to understand these automations and explain them accurately. Do not write code unless explicitly asked later.";
 
 export const buildBulkExport = (workflows) => ({
   systemPrompt: BULK_SYSTEM_PROMPT,
   extension: {
-    name: "Pabbly → Code Extractor",
+    name: "Pabbly Code Extractor",
     version: "0.8.9",
     purpose: "Bulk-captures every Pabbly Connect automation in the account for an AI to understand."
   },
@@ -283,7 +292,7 @@ export const buildBulkExport = (workflows) => ({
 export const buildExport = (workflow) => ({
   systemPrompt: SYSTEM_PROMPT,
   extension: {
-    name: "Pabbly → Code Extractor",
+    name: "Pabbly Code Extractor",
     version: "0.8.9",
     purpose:
       "Captures Pabbly Connect automations from the live page and exports a clean schema for an AI to understand.",

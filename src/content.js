@@ -1,6 +1,6 @@
 (() => {
   const TAG = "PABBLY_CAPTURE";
-  const CONTENT_VERSION = "0.8.9";
+  const CONTENT_VERSION = "0.9.2";
 
   const localCaptures = [];
   let lastResult = null;
@@ -68,6 +68,23 @@
       .trim();
   };
 
+  const extractRefs = (val) => {
+    if (typeof val !== "string") return null;
+    const re = /(\d+)\.\s+([A-Za-z][A-Za-z0-9 ]*?)\s*:/g;
+    const refs = [];
+    const seen = new Set();
+    let m;
+    while ((m = re.exec(val))) {
+      const step = Number(m[1]);
+      const field = m[2].trim();
+      const key = `${step}|${field}`;
+      if (field.length < 2 || seen.has(key)) continue;
+      seen.add(key);
+      refs.push({ step, field });
+    }
+    return refs.length ? refs : null;
+  };
+
   const valueFromGroup = (group) => {
     const ce = group.querySelector("[contenteditable]");
     if (ce && cleanText(ce)) return cleanText(ce);
@@ -129,7 +146,8 @@
       const key = `${label}::${clean}`;
       if (seenMap.has(key)) return;
       seenMap.add(key);
-      mappings.push({ field: label, value: clean });
+      const refs = extractRefs(clean);
+      mappings.push(refs ? { field: label, value: clean, references: refs } : { field: label, value: clean });
     });
 
     const bodyEl = root.querySelector(".card-body");

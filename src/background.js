@@ -200,6 +200,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+
+  if (msg.type === "clearBulk") {
+    processing = false;
+    try {
+      chrome.alarms.clear("bulkWatch");
+    } catch (_) {}
+    chrome.storage.local.remove(BULK_KEY).then(() => sendResponse({ cleared: true }));
+    return true;
+  }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, info) => {

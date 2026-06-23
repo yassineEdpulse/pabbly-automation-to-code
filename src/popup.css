@@ -27,7 +27,10 @@ header {
   margin-bottom: 12px;
 }
 
-h1 { font-size: 14px; margin: 0; }
+h1 { font-size: 14px; margin: 0; display: flex; align-items: center; gap: 6px; }
+.title-arrow { color: var(--accent); flex-shrink: 0; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; }
+.icon-btn svg { display: block; }
 
 .status {
   font-size: 11px;
