@@ -34,7 +34,7 @@ const activeTab = async () => {
 
 const isPabbly = (tab) => tab && /pabbly\.com/.test(tab.url || "");
 
-const EXPECTED_CONTENT_VERSION = "0.9.2";
+const EXPECTED_CONTENT_VERSION = "0.9.3";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });

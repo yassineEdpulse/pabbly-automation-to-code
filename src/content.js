@@ -1,6 +1,6 @@
 (() => {
   const TAG = "PABBLY_CAPTURE";
-  const CONTENT_VERSION = "0.9.2";
+  const CONTENT_VERSION = "0.9.3";
 
   const localCaptures = [];
   let lastResult = null;
@@ -135,19 +135,44 @@
 
     const mappings = [];
     const seenMap = new Set();
-    root.querySelectorAll(".card-body .form-group").forEach((g) => {
-      if (g.classList && g.classList.contains("form-group-choose_app_method")) return;
-      if (g.querySelector(".choose_app_ele_con")) return;
-      const label = cleanText(g.querySelector("label"));
-      if (!label || SKIP_LABELS.test(label)) return;
-      const value = valueFromGroup(g);
-      if (value == null) return;
-      const clean = cleanValue(value);
-      const key = `${label}::${clean}`;
+    const pushMapping = (field, rawVal) => {
+      if (!field || rawVal == null) return;
+      const clean = cleanValue(rawVal);
+      if (clean === "") return;
+      const key = `${field}::${clean}`;
       if (seenMap.has(key)) return;
       seenMap.add(key);
       const refs = extractRefs(clean);
-      mappings.push(refs ? { field: label, value: clean, references: refs } : { field: label, value: clean });
+      mappings.push(refs ? { field, value: clean, references: refs } : { field, value: clean });
+    };
+
+    // Structured app-action parameters (SMTP, API, email, Slack, etc.): label + value live in separate nodes.
+    root.querySelectorAll(".card-body .api_mapping_curr_params_con").forEach((row) => {
+      const field =
+        cleanText(row.querySelector(".map_data_label")) ||
+        (row.querySelector(".map_data_key") && row.querySelector(".map_data_key").value) ||
+        null;
+      const ta = row.querySelector("textarea.map_data_value");
+      pushMapping(field, ta ? ta.value || ta.textContent : null);
+    });
+
+    // Custom request headers, if any are filled in.
+    root.querySelectorAll(".card-body .api_header_div .header_data").forEach((row) => {
+      const k = row.querySelector(".curr_header_key") && row.querySelector(".curr_header_key").value;
+      const v = row.querySelector(".curr_header_value") && row.querySelector(".curr_header_value").value;
+      if (k || v) pushMapping(k ? `Header: ${k}` : "Header", v || "");
+    });
+
+    // Generic form-group fields (other step types). Skip the app/event pickers, the parameter/header
+    // containers (handled above), per-param inner groups, and the test-response preview.
+    root.querySelectorAll(".card-body .form-group").forEach((g) => {
+      const cl = g.classList;
+      if (cl && (cl.contains("form-group-choose_app_method") || cl.contains("api_mapping_con") || cl.contains("api_header_con") || cl.contains("api_response_con"))) return;
+      if (g.querySelector(".choose_app_ele_con")) return;
+      if (g.closest(".api_mapping_curr_params_con") || g.closest(".api_response_con")) return;
+      const label = cleanText(g.querySelector("label"));
+      if (!label || SKIP_LABELS.test(label)) return;
+      pushMapping(label, valueFromGroup(g));
     });
 
     const bodyEl = root.querySelector(".card-body");
