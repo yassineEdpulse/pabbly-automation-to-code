@@ -61,6 +61,27 @@ const getCaptures = async (tabId) => {
   return store[key] || [];
 };
 
+const STATE_KEY = (tabId) => `popupState_${tabId}`;
+
+const saveState = async () => {
+  const tab = await activeTab();
+  if (!tab || !isPabbly(tab)) return;
+  await chrome.storage.local.set({
+    [STATE_KEY(tab.id)]: {
+      workflows: state.workflows,
+      dom: state.dom,
+      selectedId: state.selectedId,
+      query: state.query
+    }
+  });
+};
+
+const loadState = async (tabId) => {
+  const key = STATE_KEY(tabId);
+  const store = await chrome.storage.local.get(key);
+  return store[key] || null;
+};
+
 const sendTab = (tabId, msg) =>
   new Promise((resolve) => {
     chrome.tabs.sendMessage(tabId, msg, (res) => {
@@ -192,6 +213,7 @@ const select = (id) => {
   const wf = state.workflows.find((w) => w.id === id);
   previewEl.textContent = wf ? exportJson(wf) : "";
   renderList();
+  saveState();
 };
 
 const renderInventory = () => {
@@ -318,6 +340,7 @@ const refresh = async () => {
   renderList();
   if (state.selectedId) select(state.selectedId);
   else previewEl.textContent = "";
+  saveState();
 };
 
 $("captureSteps").addEventListener("click", async () => {
@@ -351,8 +374,9 @@ $("captureSteps").addEventListener("click", async () => {
   renderInventory();
   renderList();
   if (wf) select(wf.id);
+  else saveState();
 
-  if (!mapped) {
+  if (!total) {
     previewEl.textContent =
       "DIAGNOSTIC — nothing parsed. Copy this whole block and send it.\n" +
       "If census.before.webhook_api_mapping_div is 0, the new content script isn't running " +
@@ -386,12 +410,16 @@ $("exportAll").addEventListener("click", async () => {
 searchEl.addEventListener("input", () => {
   state.query = searchEl.value;
   renderList();
+  saveState();
 });
 
 $("refresh").addEventListener("click", refresh);
 $("clear").addEventListener("click", async () => {
   const tab = await activeTab();
-  if (tab) await chrome.storage.session.remove(`captures_${tab.id}`);
+  if (tab) {
+    await chrome.storage.session.remove(`captures_${tab.id}`);
+    await chrome.storage.local.remove(STATE_KEY(tab.id));
+  }
   await sendRuntime({ type: "clearBulk" });
   if (bulkTimer) {
     clearInterval(bulkTimer);
@@ -412,5 +440,27 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg && (msg.type === "bulkProgress" || msg.type === "bulkDone" || msg.type === "bulkPaused")) pollBulk();
 });
 
-refresh();
-pollBulk();
+const init = async () => {
+  const tab = await activeTab();
+  const saved = tab && isPabbly(tab) ? await loadState(tab.id) : null;
+  if (saved && (saved.workflows?.length || saved.dom)) {
+    state.workflows = saved.workflows || [];
+    state.dom = saved.dom || null;
+    state.selectedId = saved.selectedId || null;
+    state.query = saved.query || "";
+    searchEl.value = state.query;
+    renderInventory();
+    renderList();
+    if (state.selectedId) select(state.selectedId);
+    const total = state.workflows.reduce((n, w) => n + countAllSteps(w.steps), 0);
+    setStatus(
+      `${state.workflows.length} parsed · ${total} steps (restored — click Refresh to re-read)`,
+      state.workflows.length ? "ok" : "warn"
+    );
+  } else {
+    refresh();
+  }
+  pollBulk();
+};
+
+init();
