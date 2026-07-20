@@ -10,9 +10,10 @@
 
 * { box-sizing: border-box; }
 
+/* Rendered in a side panel (user-resizable), so the width is fluid rather than a fixed popup size. */
 body {
   margin: 0;
-  width: 440px;
+  min-width: 320px;
   font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -150,6 +151,80 @@ button.ghost { background: transparent; color: var(--muted); }
 
 .card .actions { display: flex; gap: 6px; flex-shrink: 0; }
 .card .actions button { padding: 6px 10px; }
+
+.bulk-note { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.bulk-sub { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.bulk-reason { color: #ffcf6b; font-size: 11px; margin-bottom: 8px; }
+.bulk .row + .row { margin-top: 8px; }
+
+.errlog {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.errlog summary { cursor: pointer; color: #ff8b8b; font-size: 11px; }
+.errlog ul { margin: 8px 0 0; padding-left: 16px; max-height: 120px; overflow: auto; }
+.errlog li { color: var(--muted); font-size: 11px; margin-bottom: 3px; word-break: break-word; }
+.errlog li b { color: var(--text); font-weight: 600; }
+
+.filters:empty { display: none; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip {
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.card .warns {
+  color: #ffcf6b;
+  font-size: 10px;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.more {
+  margin-top: 8px;
+  width: 100%;
+  color: var(--muted);
+  background: transparent;
+}
+
+.toasts {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 50;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 11px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+  animation: toast-in .16s ease-out;
+  max-width: 90%;
+}
+.toast.err { border-color: #ff8b8b; color: #ff8b8b; }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
 
 .preview {
   margin-top: 10px;

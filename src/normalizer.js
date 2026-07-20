@@ -1,3 +1,8 @@
+import { analyzeSteps } from "./health.js";
+
+export const SCHEMA_VERSION = 2;
+export const EXTENSION_VERSION = "0.10.0";
+
 const STEP_KEY_HINTS = /(app|module|action|trigger|event|step|node|method|service)/i;
 const FILTER_HINTS = /(filter|condition|route|router|path|branch|criteria|rule)/i;
 const MAPPING_HINTS = /(field|param|mapping|input|setup|data|body|value|config)/i;
@@ -131,8 +136,14 @@ export const SYSTEM_PROMPT =
   "itself a router; if it has its own `routes[]` those are the expanded sub-branches (routers nest " +
   "recursively). A `nestedRouter` with a `note` instead of `routes[]` hit the capture depth limit and was " +
   "not expanded further.\n" +
-  "- `raw`: the untouched JSON returned by Pabbly for this workflow. It is the source of truth; if the " +
-  "normalized `schema` looks incomplete, trust `raw`.\n" +
+  "- `raw`: present only when the automation was reconstructed from a Pabbly API JSON response, in " +
+  "which case it is the untouched payload and the source of truth — if the normalized `schema` looks " +
+  "incomplete, trust `raw`. For a live-page capture (the usual case) `raw` holds only a short `note`: " +
+  "`schema.steps` already contains the complete captured detail and is authoritative.\n" +
+  "- `schema.health`: a self-check by the extension — `level` (complete | partial | poor | failed), " +
+  "`score` (percentage of steps that captured data), and `warnings[]` naming specific gaps such as an " +
+  "action with no fields or a router whose routes did not expand. It reports whether data was CAPTURED, " +
+  "not whether it is CORRECT, so treat a clean score as 'nothing obviously missing', not as validation.\n" +
   "Your task here is only to understand this automation and explain it back accurately. Do not write code " +
   "unless you are explicitly asked to in a later message.";
 
@@ -179,9 +190,10 @@ export const INVENTORY_SYSTEM_PROMPT =
 
 export const buildInventoryExport = (inventory, source) => ({
   systemPrompt: INVENTORY_SYSTEM_PROMPT,
+  schemaVersion: SCHEMA_VERSION,
   extension: {
     name: "Pabbly Code Extractor",
-    version: "0.8.9",
+    version: EXTENSION_VERSION,
     purpose: "Lists every Pabbly Connect automation in the account.",
     capturedFrom: source || null
   },
@@ -235,12 +247,14 @@ const stepFromParsed = (s, i) => ({
   ...(s.routes ? { routes: s.routes.map(routeFromParsed) } : {})
 });
 
-export const workflowFromParsed = (name, url, steps) => ({
+export const workflowFromParsed = (name, url, steps, error) => ({
   workflowName: name || "Workflow",
   source: url || null,
   confidence: (steps || []).some((s) => s.mappings && s.mappings.length) ? "high" : "low",
+  health: analyzeSteps(steps, error),
   stepCount: (steps || []).length,
-  steps: (steps || []).map(stepFromParsed)
+  steps: (steps || []).map(stepFromParsed),
+  ...(error ? { error } : {})
 });
 
 export const domWorkflow = (dom) => {
@@ -253,13 +267,15 @@ export const domWorkflow = (dom) => {
     host: hostOf(dom.url),
     stepArrayPath: "(parsed from live page DOM)",
     confidence: anyMappings ? "high" : "low",
+    health: analyzeSteps(dom.steps),
     stepCount: dom.steps.length,
     steps: dom.steps.map(stepFromParsed),
+    // Deliberately does NOT repeat dom.steps: schema.steps already carries the full captured
+    // detail, and duplicating it roughly doubled every export for no added information.
     rawBody: {
       note: anyMappings
-        ? "Parsed from the live page DOM after expanding steps."
-        : "Step outline only — click each step open (or use Auto-capture) to load field mappings.",
-      steps: dom.steps
+        ? "Parsed from the live page DOM after expanding steps. schema.steps holds the full captured detail; there is no separate raw API payload for a live-page capture."
+        : "Step outline only — click each step open (or use Auto-capture) to load field mappings."
     },
     capturedAt: null
   };
@@ -278,22 +294,93 @@ export const BULK_SYSTEM_PROMPT =
   "Filter and Router steps), read `text` for the literal conditions/operators (e.g. \"Equal to\", \"Exists\"). " +
   "Your task is only to understand these automations and explain them accurately. Do not write code unless explicitly asked later.";
 
+const healthSummary = (workflows) => {
+  const tally = { complete: 0, partial: 0, poor: 0, failed: 0 };
+  workflows.forEach((w) => {
+    const level = (w.health && w.health.level) || "failed";
+    if (tally[level] != null) tally[level] += 1;
+  });
+  return {
+    ...tally,
+    needsAttention: workflows
+      .filter((w) => w.health && w.health.level !== "complete")
+      .map((w) => ({
+        workflowName: w.workflowName,
+        level: w.health.level,
+        score: w.health.score,
+        warnings: w.health.warnings
+      }))
+  };
+};
+
 export const buildBulkExport = (workflows) => ({
   systemPrompt: BULK_SYSTEM_PROMPT,
+  schemaVersion: SCHEMA_VERSION,
   extension: {
     name: "Pabbly Code Extractor",
-    version: "0.8.9",
+    version: EXTENSION_VERSION,
     purpose: "Bulk-captures every Pabbly Connect automation in the account for an AI to understand."
   },
   count: workflows.length,
+  health: healthSummary(workflows),
   workflows
 });
 
+export const APP_REPORT_SYSTEM_PROMPT =
+  "This JSON was produced by the \"Pabbly Code Extractor\" browser extension. It aggregates every captured " +
+  "Pabbly Connect automation into a coverage report: which apps/services are used, how often, and which " +
+  "triggers start the automations. Use it to decide the order of a migration — the apps at the top of " +
+  "`apps[]` cover the most workflows, so building those integrations first unblocks the largest share of " +
+  "the account. `triggers[]` shows how automations are kicked off. `stepTypes` counts trigger/action/router/" +
+  "filter steps across everything. This is a planning artifact only; it contains no per-workflow field detail.";
+
+export const buildAppReport = (workflows) => {
+  const apps = new Map();
+  const triggers = new Map();
+  const stepTypes = { trigger: 0, action: 0, router: 0, filter: 0 };
+  const bump = (map, key) => {
+    if (!key) return;
+    map.set(key, (map.get(key) || 0) + 1);
+  };
+
+  const visit = (steps, seen) => {
+    (steps || []).forEach((s) => {
+      if (s.app) seen.add(s.app);
+      if (s.type && stepTypes[s.type] != null) stepTypes[s.type] += 1;
+      (s.routes || []).forEach((r) => visit(r.steps, seen));
+    });
+  };
+
+  workflows.forEach((w) => {
+    const seen = new Set();
+    visit(w.steps, seen);
+    seen.forEach((a) => bump(apps, a));
+    const trig = (w.steps || [])[0];
+    if (trig) bump(triggers, trig.event ? `${trig.app || "?"} : ${trig.event}` : trig.app || "?");
+  });
+
+  const rank = (map) =>
+    [...map.entries()]
+      .map(([name, workflowCount]) => ({ name, workflowCount }))
+      .sort((a, b) => b.workflowCount - a.workflowCount);
+
+  return {
+    systemPrompt: APP_REPORT_SYSTEM_PROMPT,
+    schemaVersion: SCHEMA_VERSION,
+    extension: { name: "Pabbly Code Extractor", version: EXTENSION_VERSION },
+    workflowCount: workflows.length,
+    stepTypes,
+    apps: rank(apps),
+    triggers: rank(triggers)
+  };
+};
+
 export const buildExport = (workflow) => ({
   systemPrompt: SYSTEM_PROMPT,
+  schemaVersion: SCHEMA_VERSION,
   extension: {
     name: "Pabbly Code Extractor",
-    version: "0.8.9",
+    version: EXTENSION_VERSION,
     purpose:
       "Captures Pabbly Connect automations from the live page and exports a clean schema for an AI to understand.",
     capturedFrom: workflow.source
@@ -302,6 +389,7 @@ export const buildExport = (workflow) => ({
     workflowName: workflow.name,
     source: workflow.source,
     confidence: workflow.confidence,
+    health: workflow.health || null,
     stepArrayPath: workflow.stepArrayPath,
     stepCount: workflow.stepCount,
     steps: workflow.steps

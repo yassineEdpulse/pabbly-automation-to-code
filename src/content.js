@@ -1,6 +1,6 @@
 (() => {
   const TAG = "PABBLY_CAPTURE";
-  const CONTENT_VERSION = "0.9.3";
+  const CONTENT_VERSION = "0.10.0";
 
   const localCaptures = [];
   let lastResult = null;
@@ -51,7 +51,13 @@
     return { order: parseFloat(m[0]), indexLabel: m[0] };
   };
 
-  const SKIP_LABELS = /^(choose app|action event|connect .*|reconnect.*)$/i;
+  // "Response Received" is the captured test-run payload, not configuration — it leaks either a
+  // sample value or Pabbly's internal path encoding into mappings. The full payload stays in `text`.
+  const SKIP_LABELS = /^(choose app|action event|response received|connect .*|reconnect.*)$/i;
+
+  // Pabbly encodes field paths as `0<=-+*/@/*+-=>events<=-+($@$)+-=>0<=-+($@$)+-=>action`.
+  // If one of these reaches a mapping value it is an internal token, never a user-set value.
+  const INTERNAL_TOKEN = /<=-\+[\s\S]*?\+-=>/;
 
   const cleanValue = (v) => {
     if (typeof v !== "string") return v;
@@ -91,6 +97,13 @@
 
     const ta = group.querySelector("textarea");
     if (ta && (ta.value || ta.textContent || "").trim()) return (ta.value || ta.textContent).trim();
+
+    // A URL-bearing input wins over any sibling <select>: the "Webhook URL" group also contains
+    // the "Select Response" dropdown, and reading the select yielded "Response A" as the URL.
+    const urlInput = [...group.querySelectorAll("input:not([type=hidden])")].find((i) =>
+      /^https?:\/\//i.test(i.value || i.getAttribute("value") || "")
+    );
+    if (urlInput) return urlInput.value || urlInput.getAttribute("value");
 
     const sel = group.querySelector("select");
     if (sel) {
@@ -139,6 +152,7 @@
       if (!field || rawVal == null) return;
       const clean = cleanValue(rawVal);
       if (clean === "") return;
+      if (INTERNAL_TOKEN.test(clean)) return;
       const key = `${field}::${clean}`;
       if (seenMap.has(key)) return;
       seenMap.add(key);
@@ -693,4 +707,21 @@
     }
     return true;
   });
+
+  // Test hook: lets the golden-fixture suite exercise the real parsers against saved HTML
+  // instead of a reimplementation, so parser fixes can't silently regress each other.
+  try {
+    if (globalThis.__PCE_EXPORT_FOR_TESTS__) {
+      globalThis.__PCE_TEST__ = {
+        CONTENT_VERSION,
+        parseStepEl,
+        parseFilter,
+        parseRoutesStatic,
+        cleanValue,
+        cleanText,
+        extractRefs,
+        valueFromGroup
+      };
+    }
+  } catch (_) {}
 })();

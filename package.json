@@ -1,0 +1,14 @@
+{
+  "name": "pabbly-code-extractor",
+  "version": "0.10.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome/Edge MV3 extension that captures Pabbly Connect automations and exports a clean schema for AI code conversion.",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "check": "node -e \"['src/background.js','src/content.js','src/interceptor.js','src/normalizer.js','src/popup.js','src/db.js','src/health.js','src/zip.js'].forEach(f=>require('child_process').execSync('node --check '+f,{stdio:'inherit'}))\""
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.5"
+  }
+}

@@ -3,9 +3,13 @@ import {
   buildExport,
   buildInventoryExport,
   buildBulkExport,
+  buildAppReport,
   domWorkflow,
   workflowFromParsed
 } from "./normalizer.js";
+import { getAllResults, getFailedResults } from "./db.js";
+import { levelPill } from "./health.js";
+import { makeZip } from "./zip.js";
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -14,18 +18,34 @@ const previewEl = $("preview");
 const searchEl = $("search");
 const inventoryEl = $("inventory");
 const bulkEl = $("bulk");
+const filtersEl = $("filters");
+const toastsEl = $("toasts");
 
-let state = { workflows: [], captures: [], dom: null, selectedId: null, query: "" };
+const RENDER_CHUNK = 100;
+
+let state = {
+  workflows: [],
+  captures: [],
+  dom: null,
+  selectedId: null,
+  query: "",
+  source: "single",
+  levels: [],
+  renderLimit: RENDER_CHUNK
+};
 
 const setStatus = (text, cls = "") => {
   statusEl.textContent = text;
   statusEl.className = `status ${cls}`;
 };
 
-const esc = (v) =>
-  String(v ?? "").replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
-  );
+const toast = (msg, cls = "") => {
+  const t = document.createElement("div");
+  t.className = `toast ${cls}`;
+  t.textContent = msg;
+  toastsEl.appendChild(t);
+  setTimeout(() => t.remove(), 2200);
+};
 
 const activeTab = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -34,7 +54,7 @@ const activeTab = async () => {
 
 const isPabbly = (tab) => tab && /pabbly\.com/.test(tab.url || "");
 
-const EXPECTED_CONTENT_VERSION = "0.9.3";
+const EXPECTED_CONTENT_VERSION = "0.10.0";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });
@@ -63,17 +83,28 @@ const getCaptures = async (tabId) => {
 
 const STATE_KEY = (tabId) => `popupState_${tabId}`;
 
+// Bulk results live in IndexedDB, never in storage.local — 1044 deep workflow trees would blow
+// past its ~10MB quota. For a bulk view we persist only the lightweight view settings.
 const saveState = async () => {
   const tab = await activeTab();
   if (!tab || !isPabbly(tab)) return;
-  await chrome.storage.local.set({
-    [STATE_KEY(tab.id)]: {
-      workflows: state.workflows,
-      dom: state.dom,
-      selectedId: state.selectedId,
-      query: state.query
+  const light = { source: state.source, selectedId: state.selectedId, query: state.query, levels: state.levels };
+  const payload =
+    state.source === "bulk" ? light : { ...light, workflows: state.workflows, dom: state.dom };
+
+  try {
+    // A single workflow snapshot is small, but never let a pathological one overrun the quota —
+    // falling back to the view settings keeps the panel usable instead of throwing on every save.
+    if (state.source !== "bulk" && JSON.stringify(payload).length > 2_000_000) {
+      await chrome.storage.local.set({ [STATE_KEY(tab.id)]: light });
+      return;
     }
-  });
+    await chrome.storage.local.set({ [STATE_KEY(tab.id)]: payload });
+  } catch (e) {
+    try {
+      await chrome.storage.local.set({ [STATE_KEY(tab.id)]: light });
+    } catch (_) {}
+  }
 };
 
 const loadState = async (tabId) => {
@@ -98,23 +129,25 @@ const sendRuntime = (msg) =>
     });
   });
 
-const copy = async (text, btn) => {
+const copy = async (text, label = "Copied to clipboard") => {
   await navigator.clipboard.writeText(text);
-  if (!btn) return;
-  const old = btn.textContent;
-  btn.textContent = "Copied";
-  setTimeout(() => (btn.textContent = old), 1200);
+  toast(label);
 };
 
-const download = (text, filename) => {
-  const blob = new Blob([text], { type: "application/json" });
+const saveBlob = (blob, filename) => {
   const url = URL.createObjectURL(blob);
   const a = Object.assign(document.createElement("a"), { href: url, download: filename });
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Downloaded ${filename}`);
 };
+
+// charset must be declared or Windows tools open the file as ANSI and accented text (é, «, —)
+// renders as mojibake even though the bytes are valid UTF-8.
+const download = (text, filename) =>
+  saveBlob(new Blob([text], { type: "application/json;charset=utf-8" }), filename);
 
 const safeName = (name) =>
   (name || "workflow").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "workflow";
@@ -154,27 +187,50 @@ const countAllSteps = (steps) => {
   return n;
 };
 
+const fmtDuration = (ms) => {
+  if (!ms || ms < 0 || !isFinite(ms)) return "—";
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+};
+
 const buildCard = (wf) => {
-  const name = el("div", { className: "name", textContent: wf.name });
-  const pill = el("span", { className: `pill ${wf.confidence}`, textContent: wf.confidence });
+  const name = el("div", { className: "name", textContent: wf.workflowName || wf.name });
+  const health = wf.health || null;
+  const pillCls = health ? levelPill(health.level) : wf.confidence;
+  const pillText = health ? `${health.level} ${health.score}%` : wf.confidence;
+  const pill = el("span", { className: `pill ${pillCls}`, textContent: pillText });
+
   const total = countAllSteps(wf.steps);
-  const label =
-    total > wf.stepCount ? `${wf.stepCount} steps (${total} incl. routes)` : `${wf.stepCount} steps`;
-  const meta = el("div", { className: "meta", textContent: `${label} · ${wf.host}` });
+  const stepCount = wf.stepCount != null ? wf.stepCount : (wf.steps || []).length;
+  const label = total > stepCount ? `${stepCount} steps (${total} incl. routes)` : `${stepCount} steps`;
+  const meta = el("div", { className: "meta", textContent: label });
   meta.appendChild(pill);
+
   const info = el("div", { className: "info" }, [name, meta]);
+  if (health && health.warnings.length) {
+    info.appendChild(
+      el("div", {
+        className: "warns",
+        textContent: `${health.warnings.length} warning${health.warnings.length > 1 ? "s" : ""}: ${health.warnings[0].message}`
+      })
+    );
+  }
 
   const exportBtn = el("button", { type: "button", className: "primary", textContent: "Export" });
   exportBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    copy(exportJson(wf), exportBtn);
+    copy(exportJson(wf), "Workflow JSON copied");
   });
 
   const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download JSON" });
   dlBtn.appendChild(makeIcon(ICON_DOWNLOAD));
   dlBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    download(exportJson(wf), `${safeName(wf.name)}.json`);
+    download(exportJson(wf), `${safeName(wf.workflowName || wf.name)}.json`);
   });
 
   const actions = el("div", { className: "actions" }, [exportBtn, dlBtn]);
@@ -185,10 +241,52 @@ const buildCard = (wf) => {
 
 const filtered = () => {
   const q = state.query.trim().toLowerCase();
-  if (!q) return state.workflows;
-  return state.workflows.filter(
-    (w) => w.name.toLowerCase().includes(q) || w.steps.some((s) => (s.app || "").toLowerCase().includes(q))
-  );
+  return state.workflows.filter((w) => {
+    if (state.levels.length) {
+      const level = (w.health && w.health.level) || "failed";
+      if (!state.levels.includes(level)) return false;
+    }
+    if (!q) return true;
+    const name = (w.workflowName || w.name || "").toLowerCase();
+    if (name.includes(q)) return true;
+    return (w.steps || []).some((s) => (s.app || "").toLowerCase().includes(q));
+  });
+};
+
+const LEVELS = [
+  ["complete", "Complete"],
+  ["partial", "Partial"],
+  ["poor", "Poor"],
+  ["failed", "Failed"]
+];
+
+const renderFilters = () => {
+  filtersEl.textContent = "";
+  if (state.workflows.length < 2) return;
+
+  const counts = {};
+  state.workflows.forEach((w) => {
+    const level = (w.health && w.health.level) || "failed";
+    counts[level] = (counts[level] || 0) + 1;
+  });
+
+  LEVELS.forEach(([key, text]) => {
+    if (!counts[key]) return;
+    const on = state.levels.includes(key);
+    const chip = el("button", {
+      type: "button",
+      className: `chip${on ? " on" : ""}`,
+      textContent: `${text} ${counts[key]}`
+    });
+    chip.addEventListener("click", () => {
+      state.levels = on ? state.levels.filter((l) => l !== key) : [...state.levels, key];
+      state.renderLimit = RENDER_CHUNK;
+      renderFilters();
+      renderList();
+      saveState();
+    });
+    filtersEl.appendChild(chip);
+  });
 };
 
 const renderList = () => {
@@ -199,13 +297,29 @@ const renderList = () => {
       el("div", {
         className: "empty",
         textContent: state.workflows.length
-          ? "No workflows match your search."
+          ? "No workflows match your search/filter."
           : "No workflow parsed. Open a Pabbly workflow, then use Auto-capture steps."
       })
     );
     return;
   }
-  items.forEach((wf) => listEl.appendChild(buildCard(wf)));
+
+  // 1044 cards will not render acceptably, so the list grows in chunks on demand.
+  const shown = items.slice(0, state.renderLimit);
+  shown.forEach((wf) => listEl.appendChild(buildCard(wf)));
+
+  if (items.length > shown.length) {
+    const more = el("button", {
+      type: "button",
+      className: "more",
+      textContent: `Show ${Math.min(RENDER_CHUNK, items.length - shown.length)} more (${items.length - shown.length} hidden)`
+    });
+    more.addEventListener("click", () => {
+      state.renderLimit += RENDER_CHUNK;
+      renderList();
+    });
+    listEl.appendChild(more);
+  }
 };
 
 const select = (id) => {
@@ -223,8 +337,8 @@ const renderInventory = () => {
 
   const label = el("div", { className: "inv-label", textContent: `All workflows in account: ${inv.length}` });
   const copyBtn = el("button", { type: "button", className: "primary", textContent: "Export list" });
-  copyBtn.addEventListener("click", (e) =>
-    copy(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), e.target)
+  copyBtn.addEventListener("click", () =>
+    copy(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), "Inventory copied")
   );
   const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download list" });
   dlBtn.appendChild(makeIcon(ICON_DOWNLOAD));
@@ -235,8 +349,35 @@ const renderInventory = () => {
   inventoryEl.appendChild(el("div", { className: "inv-row" }, [label, actions]));
 };
 
-const bulkWorkflows = (bulk) =>
-  (bulk.results || []).map((r) => workflowFromParsed(r.name, r.url, r.steps));
+const resultsToWorkflows = (results) =>
+  results.map((r, i) => ({
+    ...workflowFromParsed(r.name, r.url, r.steps, r.error),
+    id: r.id || `res_${i}`,
+    name: r.name,
+    host: "connect.pabbly.com",
+    stepArrayPath: "(bulk capture)",
+    rawBody: {
+      note: "Bulk live-page capture. schema.steps holds the full captured detail.",
+      ...(r.error ? { error: r.error } : {})
+    }
+  }));
+
+const loadResultsIntoList = async () => {
+  const results = await getAllResults();
+  if (!results.length) return false;
+  state.workflows = resultsToWorkflows(results);
+  state.source = "bulk";
+  state.renderLimit = RENDER_CHUNK;
+  if (!state.workflows.find((w) => w.id === state.selectedId)) state.selectedId = null;
+  renderFilters();
+  renderList();
+  return true;
+};
+
+const bulkExportPayload = async () => {
+  const results = await getAllResults();
+  return buildBulkExport(results.map((r) => workflowFromParsed(r.name, r.url, r.steps, r.error)));
+};
 
 const renderBulk = (bulk) => {
   bulkEl.textContent = "";
@@ -244,17 +385,35 @@ const renderBulk = (bulk) => {
 
   const done = bulk.index || 0;
   const total = bulk.queue ? bulk.queue.length : 0;
-  const errors = (bulk.results || []).filter((r) => r.error).length;
+  const errors = bulk.errors || 0;
   const running = bulk.active && !bulk.paused;
+
   const headText = running
     ? `Bulk capture: ${done}/${total}…`
     : bulk.paused
       ? `Paused at ${done}/${total}`
-      : `Bulk done: ${bulk.results.length} workflows`;
-  const head = el("div", { className: "bulk-head", textContent: errors ? `${headText} · ${errors} errors` : headText });
+      : `Bulk done: ${bulk.done || done} workflows`;
+  bulkEl.appendChild(
+    el("div", { className: "bulk-head", textContent: errors ? `${headText} · ${errors} errors` : headText })
+  );
 
   const bar = el("div", { className: "bulk-bar" });
   bar.appendChild(el("span", { style: `width:${total ? Math.round((done / total) * 100) : 0}%` }));
+  bulkEl.appendChild(bar);
+
+  if (bulk.startedAt && done > 0) {
+    const elapsed = Date.now() - bulk.startedAt;
+    const eta = running ? (elapsed / done) * (total - done) : 0;
+    const parts = [`elapsed ${fmtDuration(elapsed)}`];
+    if (running) parts.push(`~${fmtDuration(eta)} remaining`);
+    parts.push(`${Math.round(elapsed / done / 1000)}s/workflow`);
+    if (bulk.throttleMs && bulk.throttleMs > 1500) parts.push(`throttled ${Math.round(bulk.throttleMs / 1000)}s`);
+    bulkEl.appendChild(el("div", { className: "bulk-sub", textContent: parts.join(" · ") }));
+  }
+
+  if (bulk.paused && bulk.pauseReason) {
+    bulkEl.appendChild(el("div", { className: "bulk-reason", textContent: bulk.pauseReason }));
+  }
 
   const row = el("div", { className: "row" });
 
@@ -277,22 +436,109 @@ const renderBulk = (bulk) => {
     row.appendChild(cancel);
   }
 
-  if (bulk.results && bulk.results.length) {
+  if (bulk.stored) {
     const copyAll = el("button", { type: "button", className: "primary", textContent: "Copy all" });
-    copyAll.addEventListener("click", (e) =>
-      copy(JSON.stringify(buildBulkExport(bulkWorkflows(bulk)), null, 2), e.target)
+    copyAll.addEventListener("click", async () =>
+      copy(JSON.stringify(await bulkExportPayload(), null, 2), "All workflows copied")
     );
     const dlAll = el("button", { type: "button", className: "ghost", textContent: "Download all" });
-    dlAll.addEventListener("click", () =>
-      download(JSON.stringify(buildBulkExport(bulkWorkflows(bulk)), null, 2), "pabbly-all-workflows.json")
+    dlAll.addEventListener("click", async () =>
+      download(JSON.stringify(await bulkExportPayload(), null, 2), "pabbly-all-workflows.json")
     );
     row.appendChild(copyAll);
     row.appendChild(dlAll);
   }
 
-  bulkEl.appendChild(head);
-  bulkEl.appendChild(bar);
   bulkEl.appendChild(row);
+
+  if (bulk.stored) {
+    const row2 = el("div", { className: "row" });
+
+    // One file per workflow: a single 1044-workflow JSON will not fit any model's context window.
+    const zipBtn = el("button", { type: "button", className: "ghost", textContent: "ZIP (1 file each)" });
+    zipBtn.addEventListener("click", async () => {
+      const results = await getAllResults();
+      const seen = new Map();
+      const files = results.map((r) => {
+        const base = safeName(r.name);
+        const n = (seen.get(base) || 0) + 1;
+        seen.set(base, n);
+        const wf = workflowFromParsed(r.name, r.url, r.steps, r.error);
+        return {
+          name: `${base}${n > 1 ? `-${n}` : ""}.json`,
+          data: JSON.stringify(
+            buildExport({
+              ...wf,
+              name: wf.workflowName,
+              rawBody: { note: "Bulk live-page capture. schema.steps holds the full captured detail." }
+            }),
+            null,
+            2
+          )
+        };
+      });
+      saveBlob(makeZip(files), "pabbly-workflows.zip");
+    });
+
+    const ndBtn = el("button", { type: "button", className: "ghost", textContent: "NDJSON" });
+    ndBtn.addEventListener("click", async () => {
+      const results = await getAllResults();
+      const lines = results
+        .map((r) => JSON.stringify(workflowFromParsed(r.name, r.url, r.steps, r.error)))
+        .join("\n");
+      saveBlob(new Blob([lines], { type: "application/x-ndjson;charset=utf-8" }), "pabbly-workflows.ndjson");
+    });
+
+    const reportBtn = el("button", { type: "button", className: "ghost", textContent: "App report" });
+    reportBtn.addEventListener("click", async () => {
+      const results = await getAllResults();
+      const wfs = results.map((r) => workflowFromParsed(r.name, r.url, r.steps, r.error));
+      download(JSON.stringify(buildAppReport(wfs), null, 2), "pabbly-app-report.json");
+    });
+
+    row2.appendChild(zipBtn);
+    row2.appendChild(ndBtn);
+    row2.appendChild(reportBtn);
+    bulkEl.appendChild(row2);
+
+    const row3 = el("div", { className: "row" });
+    const loadBtn = el("button", { type: "button", className: "ghost", textContent: "Load results into list" });
+    loadBtn.addEventListener("click", async () => {
+      const ok = await loadResultsIntoList();
+      setStatus(ok ? `${state.workflows.length} results loaded` : "no stored results", ok ? "ok" : "warn");
+      saveState();
+    });
+    row3.appendChild(loadBtn);
+
+    if (errors) {
+      const retry = el("button", { type: "button", className: "ghost", textContent: `Retry ${errors} failed` });
+      retry.addEventListener("click", async () => {
+        const tab = await activeTab();
+        if (!isPabbly(tab)) return setStatus("open a Pabbly tab first", "err");
+        const failed = await getFailedResults();
+        if (!failed.length) return toast("No failed workflows to retry", "err");
+        await sendRuntime({ type: "retryFailed", tabId: tab.id, batchSize: 50 });
+        toast(`Retrying ${failed.length} failed workflows`);
+        pollBulk();
+      });
+      row3.appendChild(retry);
+    }
+    bulkEl.appendChild(row3);
+  }
+
+  if (bulk.log && bulk.log.length) {
+    const det = el("details", { className: "errlog" });
+    det.appendChild(el("summary", { textContent: `Error log (${bulk.log.length})` }));
+    const ul = el("ul");
+    bulk.log.forEach((e) => {
+      const li = el("li");
+      li.appendChild(el("b", { textContent: e.name || e.id || "?" }));
+      li.appendChild(document.createTextNode(` — ${e.error}`));
+      ul.appendChild(li);
+    });
+    det.appendChild(ul);
+    bulkEl.appendChild(det);
+  }
 };
 
 let bulkTimer = null;
@@ -330,6 +576,8 @@ const refresh = async () => {
   const fromDom = domWorkflow(state.dom);
   const fromJson = !fromDom ? detectWorkflows(captures) : [];
   state.workflows = fromDom ? [fromDom] : fromJson;
+  state.source = "single";
+  state.renderLimit = RENDER_CHUNK;
   if (!state.workflows.find((w) => w.id === state.selectedId)) state.selectedId = null;
 
   const invCount = dom && dom.inventory ? dom.inventory.length : 0;
@@ -337,6 +585,7 @@ const refresh = async () => {
   setStatus(`${state.workflows.length} parsed · ${invCount} listed · ${captures.length} captures`, cls);
 
   renderInventory();
+  renderFilters();
   renderList();
   if (state.selectedId) select(state.selectedId);
   else previewEl.textContent = "";
@@ -363,6 +612,7 @@ $("captureSteps").addEventListener("click", async () => {
 
   const wf = domWorkflow(state.dom);
   state.workflows = wf ? [wf] : [];
+  state.source = "single";
   state.selectedId = wf ? wf.id : null;
 
   const total = wf ? countAllSteps(wf.steps) : 0;
@@ -372,6 +622,7 @@ $("captureSteps").addEventListener("click", async () => {
   );
 
   renderInventory();
+  renderFilters();
   renderList();
   if (wf) select(wf.id);
   else saveState();
@@ -394,26 +645,24 @@ $("exportAll").addEventListener("click", async () => {
   const inv = dom && dom.inventory ? dom.inventory : [];
   if (!inv.length) return setStatus("no workflow list found", "err");
 
-  const ok = confirm(
-    `This will navigate THIS tab through all ${inv.length} workflows, deep-capturing each (routes + nested routers). ` +
-      `This is slow — potentially hours. It runs in batches of 50 and pauses between them (click Resume to continue), ` +
-      `auto-skips any workflow that stalls, and survives restarts. Don't use this tab while it runs. Continue?`
-  );
-  if (!ok) return;
-
+  // No confirm() here on purpose: native dialogs tear down the extension popup,
+  // which kills this handler before startBulk is ever sent.
   const workflows = inv.map((i) => ({ id: i.id, name: i.name }));
   await sendRuntime({ type: "startBulk", tabId: tab.id, workflows, batchSize: 50 });
-  setStatus("bulk capture started", "warn");
+  setStatus(`bulk capture started · ${inv.length} workflows`, "warn");
+  toast(`Capturing ${inv.length} workflows — leave this tab alone`);
   pollBulk();
 });
 
 searchEl.addEventListener("input", () => {
   state.query = searchEl.value;
+  state.renderLimit = RENDER_CHUNK;
   renderList();
   saveState();
 });
 
 $("refresh").addEventListener("click", refresh);
+
 $("clear").addEventListener("click", async () => {
   const tab = await activeTab();
   if (tab) {
@@ -425,31 +674,60 @@ $("clear").addEventListener("click", async () => {
     clearInterval(bulkTimer);
     bulkTimer = null;
   }
-  state = { workflows: [], captures: [], dom: null, selectedId: null, query: searchEl.value };
+  state = {
+    workflows: [],
+    captures: [],
+    dom: null,
+    selectedId: null,
+    query: searchEl.value,
+    source: "single",
+    levels: [],
+    renderLimit: RENDER_CHUNK
+  };
   setStatus("cleared");
   inventoryEl.textContent = "";
   bulkEl.textContent = "";
+  filtersEl.textContent = "";
   renderList();
   previewEl.textContent = "";
+  toast("Cleared");
 });
 
-$("copyRaw").addEventListener("click", (e) => copy(JSON.stringify(state.captures, null, 2), e.target));
+$("copyRaw").addEventListener("click", () => copy(JSON.stringify(state.captures, null, 2), "Raw captures copied"));
 $("dlRaw").addEventListener("click", () => download(JSON.stringify(state.captures, null, 2), "pabbly-raw-captures.json"));
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && (msg.type === "bulkProgress" || msg.type === "bulkDone" || msg.type === "bulkPaused")) pollBulk();
+  if (!msg) return;
+  if (msg.type === "bulkProgress" || msg.type === "bulkDone" || msg.type === "bulkPaused") pollBulk();
+  if (msg.type === "bulkDone") toast(`Bulk capture finished · ${msg.count} workflows`);
+  if (msg.type === "bulkPaused" && msg.reason) toast(msg.reason, "err");
 });
 
 const init = async () => {
   const tab = await activeTab();
   const saved = tab && isPabbly(tab) ? await loadState(tab.id) : null;
-  if (saved && (saved.workflows?.length || saved.dom)) {
-    state.workflows = saved.workflows || [];
-    state.dom = saved.dom || null;
+
+  if (saved) {
     state.selectedId = saved.selectedId || null;
     state.query = saved.query || "";
+    state.levels = saved.levels || [];
     searchEl.value = state.query;
+  }
+
+  if (saved && saved.source === "bulk") {
+    const ok = await loadResultsIntoList();
+    if (ok) {
+      if (state.selectedId) select(state.selectedId);
+      setStatus(`${state.workflows.length} results restored`, "ok");
+    } else {
+      refresh();
+    }
+  } else if (saved && (saved.workflows?.length || saved.dom)) {
+    state.workflows = saved.workflows || [];
+    state.dom = saved.dom || null;
+    state.source = "single";
     renderInventory();
+    renderFilters();
     renderList();
     if (state.selectedId) select(state.selectedId);
     const total = state.workflows.reduce((n, w) => n + countAllSteps(w.steps), 0);
@@ -460,6 +738,7 @@ const init = async () => {
   } else {
     refresh();
   }
+
   pollBulk();
 };
 

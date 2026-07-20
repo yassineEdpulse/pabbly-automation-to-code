@@ -34,6 +34,9 @@
         (args[1] && args[1].method) ||
         (request && request.method) ||
         "GET";
+      // Pass third-party requests (analytics, ad pixels) straight through untouched so we never
+      // appear in their stack traces or add a promise link to their failures.
+      if (!looksRelevant(url)) return originalFetch.apply(this, args);
       return originalFetch.apply(this, args).then((response) => {
         if (looksRelevant(url)) {
           response
