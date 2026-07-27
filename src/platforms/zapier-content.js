@@ -35,14 +35,12 @@
   const LIST_TEMPLATE_KEY = "zapier_list_template";
   const MAX_BRANCH_DEPTH = 5;
 
-  // Tried only when nothing has been learned yet. A hit is promoted to the cached template; a miss
-  // costs one request. Never the sole mechanism — see the header comment.
-  const CANDIDATE_ZAP_TEMPLATES = [
-    "/api/v4/nodes/?root_id={id}&limit=250",
-    "/api/v4/zaps/{id}/",
-    "/api/v3/zaps/{id}/",
-    "/api/v1/zaps/{id}/nodes/"
-  ];
+  // Deliberately empty. Zapier server-renders the whole Zap into the page and exposes no node
+  // endpoint — every plausible candidate (/api/v4/nodes/, /api/v4/zaps/{id}/, /api/v3/zaps/{id}/,
+  // /api/v1/zaps/{id}/nodes/) returns 404, confirmed against a live account. A template is only
+  // ever adopted if the page is observed fetching one, so this list stays empty rather than
+  // spending four failing requests per discovery.
+  const CANDIDATE_ZAP_TEMPLATES = [];
   const CANDIDATE_LIST_URLS = [
     "/api/v4/zaps/?limit=250",
     "/api/v3/zaps/?limit=250",
@@ -148,20 +146,28 @@
     if (!Array.isArray(arr) || !arr.length) return 0;
     const objects = arr.filter(isObject);
     if (!objects.length) return 0;
-    const strong = objects.some((o) => "selected_api" in o || "params" in o || "params_v2" in o);
+    // Branch nodes can be leaner than trunk nodes — some carry only wiring and an action — so
+    // requiring params/selected_api on every array would discard the very nodes we are missing.
+    const strong = objects.some(
+      (o) => "selected_api" in o || "params" in o || "params_v2" in o || ("parent_id" in o && "action" in o)
+    );
     if (!strong) return 0;
     return objects.reduce((s, o) => s + scoreAsNode(o), 0) / objects.length;
   };
 
-  const findNodeArray = (root) => {
-    let best = null;
+  // The Zap graph nests, so a payload yields several candidate arrays: the root step list plus one
+  // per branch. The root is the one whose path CONTAINS the others — picking by length alone would
+  // choose a long branch over a short trunk and silently discard everything above it.
+  const containsPath = (outer, inner) =>
+    inner !== outer && (inner.startsWith(`${outer}.`) || inner.startsWith(`${outer}[`));
+
+  const findNodeArrays = (root) => {
+    const found = [];
     const visit = (node, path, depth) => {
-      if (depth > 8) return;
+      if (depth > 14) return;
       if (Array.isArray(node)) {
         const score = scoreAsNodeArray(node);
-        if (score >= 4 && (!best || score > best.score || node.length > best.arr.length)) {
-          best = { path, score, arr: node };
-        }
+        if (score >= 4) found.push({ path, score, arr: node });
         node.forEach((v, i) => visit(v, `${path}[${i}]`, depth + 1));
         return;
       }
@@ -170,8 +176,13 @@
       }
     };
     visit(root, "", 0);
-    return best;
+
+    const encloses = (c) => found.filter((o) => containsPath(c.path, o.path)).length;
+    found.sort((a, b) => encloses(b) - encloses(a) || b.arr.length - a.arr.length || b.score - a.score);
+    return found;
   };
+
+  const findNodeArray = (root) => findNodeArrays(root)[0] || null;
 
   const LIST_KEYS = ["title", "state", "status", "is_enabled", "paused", "last_successful_run", "zap_id"];
 
@@ -210,6 +221,8 @@
 
   const BUILTIN_NAMES = {
     Webhook: "Webhooks by Zapier",
+    "Web Hook": "Webhooks by Zapier",
+    Webhooks: "Webhooks by Zapier",
     "Webhook App": "Webhooks by Zapier",
     Code: "Code by Zapier",
     Filter: "Filter by Zapier",
@@ -223,6 +236,8 @@
     Schedule: "Schedule by Zapier",
     Looping: "Looping by Zapier",
     "Sub Zap": "Sub-Zap by Zapier",
+    // The per-branch condition step inside a Paths block.
+    Branching: "Paths by Zapier",
     RSS: "RSS by Zapier",
     SMS: "SMS by Zapier",
     Translate: "Translate by Zapier",
@@ -234,6 +249,15 @@
   // rejects anything with a space so a genuine app title like "Zoho API" is left alone.
   const looksLikeApiId = (v) => /^[A-Za-z0-9_]+(?:CLI)?API(?:@[\d.]+)?$/.test(String(v || ""));
 
+  // Applied to every app name, however it was derived: a node may spell the same built-in as
+  // "Web Hook" in `app` and "WebhookAppAPI@1.0.0" in `selected_api`, and both must land on the one
+  // product name the editor shows.
+  const normalizeAppName = (v) => {
+    const t = String(v || "").trim();
+    if (!t) return null;
+    return BUILTIN_NAMES[t] || t;
+  };
+
   const humanizeApi = (v) => {
     const base = String(v || "").split("@")[0];
     if (!base) return null;
@@ -243,8 +267,7 @@
       .replace(/[_-]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-    if (!spaced) return null;
-    return BUILTIN_NAMES[spaced] || spaced;
+    return normalizeAppName(spaced);
   };
 
   const TYPE_MAP = {
@@ -263,17 +286,24 @@
   };
 
   const rawType = (n) => String((n && (n.type || n.type_of)) || "").toLowerCase();
-  const stepType = (n) => TYPE_MAP[rawType(n)] || "action";
+  const rawAction = (n) => String((n && (n.action || n.event)) || "").toLowerCase();
 
-  // `paths` (plural) is the branch POINT — the Paths by Zapier step itself. `path` (singular) is one
-  // branch, and is a perfectly ordinary step in that branch's chain. Conflating the two turns every
-  // single-action Path into a router wrapping itself.
-  const isPathsNode = (n) => rawType(n) === "paths" || /^paths by zapier$/i.test(appOf(n) || "");
+  // Zapier does not model Paths as a node type. The branch point is an "Engine" app node whose
+  // action is `parallel_paths`, so matching on type alone reports the whole router as a plain
+  // action and loses every branch.
+  const PATHS_ACTION = /^(parallel_)?paths?$/;
+
+  // `paths` (plural) is the branch POINT. `path` (singular) is one branch, and is a perfectly
+  // ordinary step in that branch's chain — conflating the two turns every single-action Path into a
+  // router wrapping itself.
+  const isPathsNode = (n) => rawType(n) === "paths" || PATHS_ACTION.test(rawAction(n));
+
+  const stepType = (n) => (isPathsNode(n) ? "router" : TYPE_MAP[rawType(n)] || "action");
 
   function appOf(n) {
     if (!isObject(n)) return null;
     const t = rawType(n);
-    if (t === "paths") return "Paths by Zapier";
+    if (t === "paths" || isPathsNode(n)) return "Paths by Zapier";
     if (t === "path") return "Filter by Zapier";
 
     const meta = isObject(n.meta) ? n.meta : {};
@@ -282,7 +312,7 @@
     );
     // Nodes often set `app` to the same raw identifier as `selected_api`, which would otherwise
     // short-circuit straight past the humanizer and export "EmailParserCLIAPI@1.1.2" as the app name.
-    if (direct && !looksLikeApiId(direct)) return direct.trim();
+    if (direct && !looksLikeApiId(direct)) return normalizeAppName(direct);
 
     const fromApi = humanizeApi(n.selected_api || n.api || meta.selected_api || direct);
     if (fromApi) return fromApi;
@@ -352,13 +382,14 @@
     return refs.length ? refs : null;
   };
 
-  // `skipKey` drops the raw conditions blob for a step whose conditions were already parsed into
-  // `filter` — otherwise every filter step carries the same data twice, once as unreadable JSON.
-  const mappingsFrom = (params, skipKey) => {
+  // `skip` drops the raw conditions blob for a step whose conditions were already parsed into
+  // `filter` — otherwise every filter step carries the same data twice, once as unreadable JSON —
+  // along with any presentation-only params the caller wants out of the way.
+  const mappingsFrom = (params, skip) => {
     if (!params) return [];
     const out = [];
     for (const [key, raw] of Object.entries(params)) {
-      if (key.startsWith("_") || key === skipKey) continue;
+      if (key.startsWith("_") || (skip && skip.has(key))) continue;
       const value = flatValue(raw);
       if (value == null || value === "") continue;
       const refs = rawRefs(value);
@@ -367,39 +398,79 @@
     return out;
   };
 
-  const CONDITION_KEY = /^(filter|filters|conditions|rules|criteria)$/i;
+  const CONDITION_KEY = /^(filters?|filter_criteria|conditions?|rules?|criteria)$/i;
+
+  // Zapier stores filter rows as a JSON *string* under `filter_criteria`, not as a live array, so
+  // reading the param straight off the node yields an opaque blob and no parsed conditions.
+  const asRowArray = (v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v !== "string") return null;
+    const trimmed = v.trim();
+    if (!trimmed.startsWith("[")) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch (_) {
+      return null;
+    }
+  };
 
   const normalizeCondition = (c) => {
     if (!isObject(c)) return null;
     const field = c.key ?? c.field ?? c.left ?? c.lhs ?? null;
-    const operator = c.op ?? c.operator ?? c.comparison ?? c.condition ?? null;
+    const operator = c.match ?? c.op ?? c.operator ?? c.comparison ?? c.condition ?? null;
     const value = c.val ?? c.value ?? c.right ?? c.rhs ?? null;
     if (field == null && value == null) return null;
     return {
       field: field == null ? null : String(field),
       operator: operator == null ? null : String(operator),
-      value: value == null ? null : flatValue(value)
+      value: value == null ? null : flatValue(value),
+      // "stop" rows end the Zap when they match, rather than gating it — the inverse of "continue".
+      ...(c.action && String(c.action) !== "continue" ? { action: String(c.action) } : {})
     };
   };
 
-  // Zapier stores filters as an array of OR-groups, each an array of AND-conditions. A flat array
-  // of conditions (some older Zaps, and Path nodes) is treated as a single AND group. Returns the
-  // source key too so the caller can keep the raw blob out of `mappings`.
+  // Three shapes in the wild, all meaning "groups are OR'd, conditions within a group are AND'd":
+  //   nested   [[a, b], [c]]                    older Zaps and Path nodes
+  //   grouped  [{group: 1, …}, {group: 2, …}]   current filter_criteria — group id, not nesting
+  //   flat     [a, b]                           a single AND group
+  // Returns the source key too so the caller can keep the raw blob out of `mappings`.
+  const groupRows = (rows) => {
+    if (Array.isArray(rows[0])) return rows;
+    if (rows.every((r) => isObject(r) && r.group != null)) {
+      const byGroup = new Map();
+      rows.forEach((r) => {
+        const k = String(r.group);
+        if (!byGroup.has(k)) byGroup.set(k, []);
+        byGroup.get(k).push(r);
+      });
+      return [...byGroup.values()];
+    }
+    return [rows];
+  };
+
   const conditionsFrom = (params) => {
     if (!params) return { groups: null, key: null };
-    const entry = Object.entries(params).find(
-      ([k, v]) => CONDITION_KEY.test(k) && Array.isArray(v) && v.length
-    );
-    if (!entry) return { groups: null, key: null };
-    const raw = entry[1];
-    const source = Array.isArray(raw[0]) ? raw : [raw];
+    let key = null;
+    let rows = null;
+    for (const [k, v] of Object.entries(params)) {
+      if (!CONDITION_KEY.test(k)) continue;
+      const parsed = asRowArray(v);
+      if (parsed && parsed.length) {
+        key = k;
+        rows = parsed;
+        break;
+      }
+    }
+    if (!rows) return { groups: null, key: null };
+
     const groups = [];
-    source.forEach((group, i) => {
+    groupRows(rows).forEach((group, i) => {
       if (!Array.isArray(group)) return;
       const conditions = group.map(normalizeCondition).filter(Boolean);
       if (conditions.length) groups.push({ joiner: i === 0 ? "AND" : "OR", conditions });
     });
-    return groups.length ? { groups, key: entry[0] } : { groups: null, key: null };
+    return groups.length ? { groups, key } : { groups: null, key: null };
   };
 
   const filterFrom = (params) => conditionsFrom(params).groups;
@@ -409,9 +480,10 @@
   // the very model call the export exists for. The dump is kept only when nothing reached mappings,
   // where it is the sole record of the step's config. ASCII separator on purpose — this project has
   // been bitten twice by mojibake in generated output.
-  const summaryText = (n, params, mappings) => {
+  const summaryText = (n, params, mappings, filter) => {
     const head = [titleOf(n), n.selected_api, n.action].filter(Boolean).join(" | ");
-    if (mappings && mappings.length) return head.slice(0, 300);
+    // A filter step's whole config lives in `filter`, so it is captured even with no mappings.
+    if ((mappings && mappings.length) || (filter && filter.length)) return head.slice(0, 300);
     let dump = "";
     try {
       dump = params ? JSON.stringify(params) : "";
@@ -419,10 +491,18 @@
     return `${head}${dump ? ` | ${dump}` : ""}`.slice(0, 2500);
   };
 
+  // A Path branch carries its editor styling next to its condition. Emoji and colour are not
+  // configuration and only add noise to a migration export; `path_eval_index` is the branch's
+  // evaluation order, so that one stays.
+  const BRANCH_CHROME = ["emoji", "color"];
+  const isBranchNode = (n) => rawType(n) === "path" || /^Branching/i.test(String((n && n.app) || ""));
+
   const mapNode = (n, order) => {
     const params = paramsOf(n);
     const { groups, key } = conditionsFrom(params);
-    const mappings = mappingsFrom(params, key);
+    const skip = new Set(key ? [key] : []);
+    if (isBranchNode(n)) BRANCH_CHROME.forEach((k) => skip.add(k));
+    const mappings = mappingsFrom(params, skip);
     return {
       id: nodeId(n) == null ? null : String(nodeId(n)),
       order,
@@ -434,8 +514,56 @@
       mappings,
       filter: groups,
       routes: null,
-      text: summaryText(n, params, mappings)
+      text: summaryText(n, params, mappings, groups)
     };
+  };
+
+  // ---------------------------------------------------------------- nested `steps` → step tree
+
+  // Zapier's own model (`zap.current_version.zdl`) has no parent_id at all: a step's children live
+  // in its own `steps[]`. A Paths step's `steps[]` holds one wrapper per branch, and that wrapper's
+  // `steps[]` is the branch's chain, whose first entry is the BranchingAPI step naming the branch.
+  const childStepsOf = (n) => (n && Array.isArray(n.steps) ? n.steps.filter(isObject) : []);
+
+  const hasNestedSteps = (nodes) => nodes.some((n) => childStepsOf(n).length > 0);
+
+  const collectNested = (nodes, counter, depth) => {
+    const out = [];
+    for (const n of nodes) {
+      const step = mapNode(n, ++counter.n);
+      counter.orderById.set(step.id, step.order);
+      const kids = childStepsOf(n);
+
+      if (isPathsNode(n)) {
+        step.type = "router";
+        if (depth >= MAX_BRANCH_DEPTH) {
+          step.nestedRouter = true;
+          step.depthCapped = true;
+          out.push(step);
+          continue;
+        }
+        step.routes = kids.map((branch, i) => {
+          // Most branches are a wrapper around the chain; tolerate a chain given inline.
+          const chain = childStepsOf(branch);
+          const steps = collectNested(chain.length ? chain : [branch], counter, depth + 1);
+          return {
+            routeOrder: i + 1,
+            routeName:
+              titleOf(branch) || (steps[0] && steps[0].title) || `Path ${String.fromCharCode(65 + i)}`,
+            routeId: nodeId(branch) == null ? null : String(nodeId(branch)),
+            stepCount: steps.length,
+            steps
+          };
+        });
+        out.push(step);
+        continue;
+      }
+
+      out.push(step);
+      // Nested steps on anything that is not a branch point are simply more of the same chain.
+      if (kids.length) out.push(...collectNested(kids, counter, depth));
+    }
+    return out;
   };
 
   // ---------------------------------------------------------------- flat nodes → step tree
@@ -478,16 +606,17 @@
       steps.push(step);
 
       const kids = childrenOf(idx, cur);
-      const branches = kids.length > 1 || (isPathsNode(cur) && kids.length >= 1);
+      // A Paths node is a router even when no branch was found: reporting it as an action with no
+      // fields hides the fact that the branches are missing, which is the thing worth knowing.
+      const branches = kids.length > 1 || isPathsNode(cur);
 
       if (branches) {
+        step.type = "router";
         if (depth >= MAX_BRANCH_DEPTH) {
-          step.type = "router";
           step.nestedRouter = true;
           step.depthCapped = true;
           return steps;
         }
-        step.type = "router";
         step.routes = kids.map((kid, i) => {
           const branch = collectChain(kid, idx, counter, depth + 1);
           return {
@@ -506,6 +635,9 @@
     return steps;
   };
 
+  // Filter rows address their source with a bare `<nodeId>__<path>` key rather than a {{…}} token.
+  const FIELD_REF_RE = /^(\d+)__(.+)$/;
+
   // Zapier numbers references by node id; the exported schema numbers steps by order. This is the
   // pass that converts one to the other, once every node has an order.
   const resolveRefs = (steps, orderById) => {
@@ -518,6 +650,18 @@
         delete m.__refs;
         if (refs.length) m.references = refs;
       });
+
+      (s.filter || []).forEach((group) => {
+        (group.conditions || []).forEach((c) => {
+          const m = c.field && FIELD_REF_RE.exec(c.field);
+          if (!m) return;
+          const step = orderById.get(m[1]);
+          if (step == null) return;
+          c.field = m[2];
+          c.step = step;
+        });
+      });
+
       (s.routes || []).forEach((r) => resolveRefs(r.steps, orderById));
     });
   };
@@ -525,9 +669,17 @@
   const nodesToSteps = (nodes) => {
     const usable = (nodes || []).filter(isObject);
     if (!usable.length) return [];
-    const idx = buildIndex(usable);
     const counter = { n: 0, orderById: new Map() };
 
+    // Zapier's own payload nests; other shapes (and the API responses some accounts return) link by
+    // parent_id. Which one is in hand is decided by the data, not assumed.
+    if (hasNestedSteps(usable)) {
+      const nested = collectNested(usable, counter, 0);
+      resolveRefs(nested, counter.orderById);
+      return nested;
+    }
+
+    const idx = buildIndex(usable);
     let steps;
     if (idx.roots.length === 1) {
       steps = collectChain(idx.roots[0], idx, counter, 0);
@@ -777,23 +929,24 @@
     };
   };
 
-  // Called once before a bulk run. If a template can be established the crawler reads every Zap in
-  // place; otherwise it reports back and the run falls through to navigate-and-parse.
+  // Called once before a bulk run to decide whether every Zap can be read in place. A learned API
+  // template is the fast path, but fetching the editor page and reading its server-rendered payload
+  // works just as well without one — and since Zapier has no node endpoint, that is the normal case.
+  // Either way the tab never navigates; only a total failure falls back to the crawler.
   const prepareBulk = async () => {
-    const id = currentZapId();
-    let template = await cached(TEMPLATE_KEY);
+    const template = await cached(TEMPLATE_KEY);
+    if (template) return { direct: true, via: "api", template };
 
-    if (!template && id) template = await ensureTemplate(id);
+    // Prove the server-rendered path works on one real Zap before committing the run to it.
+    const sample = currentZapId() || (await scrapeInventory())[0]?.id;
+    if (!sample) return { direct: false, reason: "no Zap available to verify in-place capture" };
 
-    if (!template) {
-      // Nothing learned yet and we are not sitting on a Zap (e.g. the list page). Try the
-      // candidates against the first Zap we know about.
-      const inv = await scrapeInventory();
-      if (inv.length) template = await ensureTemplate(inv[0].id);
-    }
+    try {
+      const found = await nodesForZap(sample);
+      if (found) return { direct: true, via: "server-rendered editor page" };
+    } catch (_) {}
 
-    if (template) return { direct: true, template };
-    return { direct: false, reason: "no Zap endpoint could be learned — falling back to navigation" };
+    return { direct: false, reason: "could not read a Zap in place — falling back to navigation" };
   };
 
   const captureById = async (id) => {
@@ -845,6 +998,7 @@
         appOf,
         eventOf,
         findNodeArray,
+        findNodeArrays,
         findZapList,
         humanizeApi,
         filterFrom,

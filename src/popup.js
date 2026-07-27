@@ -79,7 +79,7 @@ const applyPlatform = (tab) => {
 
 const notSupported = () => setStatus("not a Pabbly or Zapier tab", "err");
 
-const EXPECTED_CONTENT_VERSION = "0.11.1";
+const EXPECTED_CONTENT_VERSION = "0.11.4";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });

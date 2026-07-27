@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.4] - 2026-07-27
+
+### Fixed
+- The per-branch condition step inside a Paths block exported as `Branching` rather than `Paths by Zapier`.
+- A Path branch's editor styling (`emoji`, `color`) was exported as configuration. Those are dropped for branch steps only — they are legitimate parameters on other apps — while `path_eval_index`, which is the branch's evaluation order, is kept.
+- Filter steps re-dumped their whole raw `filter_criteria` blob into `text`, because the check for "did anything get captured" looked only at `mappings` and a filter's config lives in `filter`. A step whose conditions parsed now gets the short summary like every other captured step.
+
+## [0.11.3] - 2026-07-27
+
+### Fixed
+- **Zapier Zaps with Paths exported only their trunk.** A 10-step Zap came out as 4 steps with both branches missing. Zapier's own graph (`zap.current_version.zdl`) carries no `parent_id` at all — a step's children are nested in its own `steps[]`, and a Paths step holds one wrapper per branch whose `steps[]` is that branch's chain. The walker assumed a flat `parent_id`-linked list, found no children, and stopped at the branch point. Both shapes are now handled, chosen by inspecting the data rather than assuming.
+- Branch routes take their name from the `BranchingAPI` step that opens them, so a route reads as "Client du primaire/secondaire" rather than "Path A". Steps inside a branch are numbered continuously with the trunk, so references and `order` stay consistent across the whole Zap.
+- When a payload contained several candidate step arrays, the root list was not reliably chosen — a long branch could outrank a short trunk and discard everything above it. The array that encloses the others now wins.
+- A trigger with no configurable fields (a Zapier catch-hook takes none) was reported as "captured no field mappings", which alone dropped an otherwise complete Zap to a "poor 0%" health score. An empty trigger is now counted as fully captured.
+
+### Changed
+- The Zapier adapter no longer probes for a node API. Zapier server-renders the whole Zap into the page, and the endpoints previously guessed at do not exist — every one returned 404.
+
+## [0.11.2] - 2026-07-27
+
+### Fixed
+- Zapier Filter steps exported zero parsed conditions. Zapier stores filter rows as a JSON *string* under `filter_criteria`, so reading the parameter straight off the node yielded an opaque blob; the string is now parsed, and `filter_criteria` is recognized alongside the other condition keys.
+- Filter grouping read the wrong shape. Current Zaps deliver a flat list where each row carries a `group` id — rows sharing a group are AND'd and the groups OR'd — rather than the nested arrays older Zaps use. All three shapes (nested, grouped, flat) are now handled.
+- Filter conditions took their operator from `op`, but Zapier writes it as `match`, so every condition exported a null operator. Rows marked `action: "stop"` are also flagged now, since those end the Zap when they match rather than gating it.
+- Filter conditions address their source with a bare `<nodeId>__<path>` key, which was exported verbatim. It is now resolved the same way `{{…}}` tokens are: the condition carries a `step` matching another step's `order`, and `field` holds the path alone.
+- Paths steps were exported as plain actions named "Engine" with no routes. Zapier does not model Paths as a node type — the branch point is an Engine app node whose action is `parallel_paths` — so matching on type alone lost the entire router. A Paths node is now typed `router` even when no branch was captured, so health reports the missing branches instead of hiding them behind "action captured no fields".
+- Built-ins spelled as a plain title rather than an API identifier (`Web Hook`) exported unnormalized. App names now go through one normalization step however they were derived.
+- Node-array detection could settle on a trunk-only subset when the editor payload contained both that and the full graph, exporting a 10-step Zap as 4 steps with every branch silently dropped. The longest graph now wins, with the heuristic score as the tie-break, and branch nodes leaner than trunk nodes are no longer rejected outright.
+
 ## [0.11.1] - 2026-07-27
 
 ### Fixed

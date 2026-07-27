@@ -55,6 +55,14 @@ const walk = (steps, warnings, counts, where) => {
       return;
     }
 
+    // A trigger can legitimately take no configuration — a Zapier catch-hook has none — so an empty
+    // one is fully captured, not a gap. Only steps whose adapter declared a type get this pass; an
+    // untyped step with no fields is still worth flagging.
+    if (s.type === "trigger" && !hasFields(s)) {
+      counts.withData += 1;
+      return;
+    }
+
     if (!hasFields(s)) {
       warnings.push({ code: "action-no-fields", message: `${at} captured no field mappings` });
       return;

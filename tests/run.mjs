@@ -82,6 +82,12 @@ const fixture = (file) => {
 
 const findMapping = (mappings, field) => mappings.find((m) => m.field === field);
 
+const countDeep = (steps) =>
+  (steps || []).reduce(
+    (n, s) => n + 1 + (s.routes || []).reduce((m, r) => m + countDeep(r.steps), 0),
+    0
+  );
+
 console.log(`\nPabbly Code Extractor — golden fixtures (content v${api.CONTENT_VERSION})\n`);
 
 console.log("SMTP / app-action parameters");
@@ -286,6 +292,15 @@ console.log("\nZapier — node graph → canonical steps");
     eq(hit.path, "objects", "path");
   });
 
+  // The Zap editor server-renders both a trunk-only list and the full graph. Picking the shorter
+  // one silently drops every branch — which is exactly how a 10-step Zap exported as 4 steps.
+  check("prefers the full graph over a trunk-only subset in the same payload", () => {
+    const trunk = payload.objects.slice(0, 3);
+    const hit = zap.findNodeArray({ pageProps: { trunk, graph: { objects: payload.objects } } });
+    eq(hit.arr.length, 7, "must pick the longer array");
+    truthy(zap.findNodeArrays({ trunk, all: payload.objects }).length >= 2, "both arrays detected");
+  });
+
   const steps = zap.nodesToSteps(payload.objects);
 
   check("walks parent_id into an ordered linear chain", () => {
@@ -368,7 +383,8 @@ console.log("\nZapier — node graph → canonical steps");
     eq(f.length, 2, "group count");
     eq(f[0].joiner, "AND", "first joiner");
     eq(f[1].joiner, "OR", "second joiner");
-    eq(f[0].conditions[0].field, "1001__status", "field");
+    eq(f[0].conditions[0].field, "status", "field stripped of its node-id prefix");
+    eq(f[0].conditions[0].step, 1, "field resolved to the source step");
     eq(f[0].conditions[0].operator, "exact", "operator");
     eq(f[0].conditions[0].value, "paid", "value");
   });
@@ -419,6 +435,135 @@ console.log("\nZapier — node graph → canonical steps");
     eq(h.counts.routes, 2, "routes");
     eq(h.level, "complete", "level");
   });
+
+  // Everything below mirrors a real "Update Lead to Client List" capture, where the Paths step came
+  // through as a plain action named "Engine" and both filters reported zero parsed conditions.
+  console.log("\nZapier — filter_criteria and Paths (Engine/parallel_paths)");
+  const real = zap.nodesToSteps(
+    JSON.parse(readFileSync(join(HERE, "fixtures", "zapier-filter-criteria.json"), "utf8")).objects
+  );
+
+  check("normalizes a built-in spelled as a plain title", () => {
+    eq(real[0].app, "Webhooks by Zapier", "Web Hook -> product name");
+    eq(real[1].app, "Filter by Zapier", "Filter -> product name");
+  });
+
+  check("recognizes an Engine/parallel_paths node as a router", () => {
+    eq(real[2].app, "Paths by Zapier", "app");
+    eq(real[2].type, "router", "type");
+    truthy(Array.isArray(real[2].routes), "routes array present even with no branches captured");
+  });
+
+  check("parses filter_criteria delivered as a JSON string", () => {
+    truthy(real[1].filter, "filter parsed");
+    eq(findMapping(real[1].mappings, "filter_criteria"), undefined, "raw blob kept out of mappings");
+  });
+
+  check("groups rows by their group id, not by nesting", () => {
+    eq(real[1].filter.length, 2, "group count");
+    eq(real[1].filter[0].joiner, "AND", "first joiner");
+    eq(real[1].filter[1].joiner, "OR", "second joiner");
+    eq(real[1].filter[0].conditions.length, 2, "first group size");
+    eq(real[1].filter[1].conditions.length, 2, "second group size");
+  });
+
+  check("reads match as the operator and flags stop rows", () => {
+    const c = real[1].filter[0].conditions[0];
+    eq(c.operator, "icontains", "operator from `match`");
+    eq(c.value, "live", "value");
+    eq(c.action, undefined, "continue rows carry no action");
+    eq(real[1].filter[1].conditions[1].action, "stop", "stop row flagged");
+  });
+
+  check("resolves a bare nodeId__path filter key to a step reference", () => {
+    const c = real[1].filter[0].conditions[0];
+    eq(c.field, "events[]subject__status", "field stripped of the node id");
+    eq(c.step, 1, "resolved to the trigger's order");
+  });
+
+  // Zapier's real payload (props.pageProps.zap.current_version.zdl) has no parent_id anywhere: a
+  // step's children are nested in its own steps[]. Reading it as a flat parent_id graph exported
+  // the 4 top-level steps of this 10-step Zap and dropped both Paths branches entirely.
+  console.log("\nZapier — nested zdl graph");
+  {
+    const nextData = JSON.parse(readFileSync(join(HERE, "fixtures", "zapier-zdl-nested.json"), "utf8"));
+
+    check("picks the enclosing step list, not a longer nested branch", () => {
+      const hit = zap.findNodeArray(nextData);
+      truthy(hit, "node array");
+      eq(hit.path, "props.pageProps.zap.current_version.zdl.steps", "path");
+      eq(hit.arr.length, 4, "top-level count");
+    });
+
+    const zdl = zap.findNodeArray(nextData).arr;
+    const steps = zap.nodesToSteps(zdl);
+
+    check("walks nested steps[] into the full graph", () => {
+      eq(steps.length, 4, "top-level steps");
+      eq(countDeep(steps), 10, "total steps including both branches");
+    });
+
+    check("expands a parallel_paths step into one route per branch", () => {
+      const paths = steps[3];
+      eq(paths.type, "router", "type");
+      eq(paths.app, "Paths by Zapier", "app");
+      eq(paths.routes.length, 2, "route count");
+      eq(paths.routes[0].stepCount, 3, "branch A size");
+      eq(paths.routes[1].stepCount, 3, "branch B size");
+    });
+
+    check("names each route from its BranchingAPI condition step", () => {
+      eq(steps[3].routes[0].routeName, "Client du primaire/secondaire", "route A");
+      eq(steps[3].routes[1].routeName, "Client du cégep/université", "route B");
+    });
+
+    check("names the branch condition step by its product name", () => {
+      eq(steps[3].routes[0].steps[0].app, "Paths by Zapier", "BranchingAPI app");
+      eq(steps[1].app, "Filter by Zapier", "standalone filter app");
+    });
+
+    check("drops a branch's editor styling but keeps its evaluation order", () => {
+      const cond = steps[3].routes[0].steps[0];
+      eq(findMapping(cond.mappings, "emoji"), undefined, "emoji");
+      eq(findMapping(cond.mappings, "color"), undefined, "color");
+      eq(findMapping(cond.mappings, "path_eval_index").value, "0", "path_eval_index kept");
+    });
+
+    check("does not dump raw params into text when filter captured the config", () => {
+      truthy(steps[1].text.length < 120, `filter step text length (${steps[1].text.length})`);
+      eq(/filter_criteria/.test(steps[1].text), false, "raw blob must not reappear in text");
+    });
+
+    check("keeps branch children ordered after the trunk", () => {
+      const branchA = steps[3].routes[0].steps;
+      eq(branchA[0].order, 5, "first branch child order");
+      eq(branchA[0].type, "filter", "branch condition is a filter");
+      eq(branchA[1].app, "Sendy", "third-party app in branch");
+      eq(branchA[1].event, "unsubscribe", "action");
+      eq(steps[3].routes[1].steps[2].order, 10, "last step order");
+    });
+
+    check("resolves references from inside a branch back to the trigger", () => {
+      const email = findMapping(steps[3].routes[0].steps[1].mappings, "email");
+      truthy(email.references, "references");
+      eq(email.references[0].step, 1, "resolved to the trigger");
+      eq(email.references[0].field, "events[]subject__email", "field path");
+    });
+
+    check("parses the branch's own filter conditions", () => {
+      const cond = steps[3].routes[0].steps[0].filter[0].conditions[0];
+      eq(cond.field, "events[]subject__extra_attrs[]value", "field");
+      eq(cond.step, 1, "source step");
+      eq(cond.value, "Primaire", "value");
+    });
+
+    check("scores the whole Zap, branches included", () => {
+      const h = analyzeSteps(steps);
+      eq(h.counts.total, 10, "total");
+      eq(h.counts.routes, 2, "routes");
+      eq(h.level, "complete", "level");
+    });
+  }
 
   check("exports Zapier steps under the Zapier system prompt", () => {
     const wf = domWorkflow(

@@ -1,0 +1,33 @@
+{
+  "objects": [
+    {
+      "id": 132161198,
+      "parent_id": null,
+      "type": "read",
+      "app": "Web Hook",
+      "selected_api": "WebHookAPI@1.0.29",
+      "action": "hook_v2",
+      "params": {}
+    },
+    {
+      "id": 132171902,
+      "parent_id": 132161198,
+      "type": "filter",
+      "app": "Filter",
+      "action": "filter",
+      "title": "Filter conditions",
+      "params": {
+        "filter_criteria": "[{\"id\":5683051449776871,\"group\":8937044064480837,\"key\":\"132161198__events[]subject__status\",\"value\":\"live\",\"match\":\"icontains\",\"action\":\"continue\"},{\"id\":7521810810772201,\"group\":8937044064480837,\"key\":\"132161198__events[]action\",\"value\":\"CREATED_A_CLIENT\",\"match\":\"icontains\",\"action\":\"continue\"},{\"id\":3242648718388737,\"group\":2394607635459055,\"key\":\"132161198__events[]action\",\"value\":\"CHANGED_CLIENT_STATUS\",\"match\":\"icontains\",\"action\":\"continue\"},{\"id\":3774702865393645,\"group\":2394607635459055,\"key\":\"132161198__events[]subject__extra_attrs[]value\",\"value\":\"Autre institution\",\"match\":\"icontains\",\"action\":\"stop\"}]"
+      }
+    },
+    {
+      "id": 344265303,
+      "parent_id": 132171902,
+      "type": "action",
+      "app": "Engine",
+      "action": "parallel_paths",
+      "title": "Split into paths",
+      "params": {}
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { analyzeSteps } from "./health.js";
 
 export const SCHEMA_VERSION = 2;
-export const EXTENSION_VERSION = "0.11.1";
+export const EXTENSION_VERSION = "0.11.4";
 export const EXTENSION_NAME = "Automation Code Extractor";
 
 const idOf = (platform) => (platform && platform.id) || null;
@@ -176,7 +176,14 @@ export const ZAPIER_SYSTEM_PROMPT =
   "code, treat the value as a reference to that step's output (e.g. `step3.email`), and never hard-code the " +
   "literal `{{...}}` token. Tokens the extension could not resolve are left verbatim in the value.\n" +
   "- Field names in `mappings` are Zapier's internal parameter keys (e.g. `to`, `subject`, `body__html`), " +
-  "not the labels shown in the editor. A double underscore denotes nesting: `body__html` = `body.html`.\n" +
+  "not the labels shown in the editor. A double underscore denotes nesting: `body__html` = `body.html`, " +
+  "and `[]` denotes an array element: `events[]subject__status` = `events[].subject.status`.\n" +
+  "- FILTER CONDITIONS address their source the same way, as a bare `<nodeId>__<path>` key. Those are " +
+  "resolved too: a condition carrying a `step` is reading that step's output at `field`, so " +
+  "`{ step: 1, field: \"events[]subject__status\", operator: \"icontains\", value: \"live\" }` means \"step 1's " +
+  "events[].subject.status contains 'live'\". `operator` is Zapier's own comparison key (`exact`, " +
+  "`icontains`, `iexist`, `not_in`, …). A condition marked `action: \"stop\"` ENDS the Zap when it " +
+  "matches — it is an exclusion, the inverse of the others, which gate the Zap by passing.\n" +
   "- A `Code by Zapier` step holds its JavaScript or Python in `mappings` under a `code` key. Reimplement " +
   "that logic rather than trying to run it as-is.\n" +
   "- `Paths by Zapier` becomes a `router` step. Each entry in `routes[]` is one Path, and that Path's own " +

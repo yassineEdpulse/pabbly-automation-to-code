@@ -1,0 +1,114 @@
+{
+  "props": {
+    "pageProps": {
+      "zap": {
+        "current_version": {
+          "zdl": {
+            "steps": [
+              {
+                "id": "132161198",
+                "type": "read",
+                "action": "hook_v2",
+                "app": "WebHookCLIAPI@1.0.29",
+                "params": {}
+              },
+              {
+                "id": "132171902",
+                "type": "filter",
+                "action": "filter",
+                "app": "FilterAPI",
+                "title": "Filter conditions",
+                "params": {
+                  "filter_criteria": "[{\"id\":1,\"group\":100,\"key\":\"132161198__events[]subject__status\",\"value\":\"live\",\"match\":\"icontains\",\"action\":\"continue\"},{\"id\":2,\"group\":200,\"key\":\"132161198__events[]action\",\"value\":\"CHANGED_CLIENT_STATUS\",\"match\":\"icontains\",\"action\":\"continue\"}]"
+                }
+              },
+              {
+                "id": "344265303",
+                "type": "filter",
+                "action": "filter",
+                "app": "FilterAPI",
+                "params": {
+                  "filter_criteria": "[{\"id\":3,\"group\":300,\"key\":\"132161198__events[]subject__email\",\"value\":\"\",\"match\":\"iexist\",\"action\":\"continue\"}]"
+                }
+              },
+              {
+                "id": "parallel_133631625",
+                "type": "run",
+                "action": "parallel_paths",
+                "app": "EngineAPI",
+                "params": {},
+                "steps": [
+                  {
+                    "id": "series_133631626",
+                    "type": "series",
+                    "steps": [
+                      {
+                        "id": "133631626",
+                        "type": "filter",
+                        "action": "filter",
+                        "app": "BranchingAPI",
+                        "title": "Client du primaire/secondaire",
+                        "params": {
+                          "emoji": "1F393",
+                          "color": "Heroine Blue",
+                          "path_eval_index": 0,
+                          "filter_criteria": "[{\"id\":4,\"group\":400,\"key\":\"132161198__events[]subject__extra_attrs[]value\",\"value\":\"Primaire\",\"match\":\"icontains\",\"action\":\"continue\"}]"
+                        }
+                      },
+                      {
+                        "id": "174511358",
+                        "type": "write",
+                        "action": "unsubscribe",
+                        "app": "SendyCLIAPI@1.2.0",
+                        "authentication_id": 29172840,
+                        "params": { "email": "{{132161198__events[]subject__email}}", "list": "leads" }
+                      },
+                      {
+                        "id": "174511360",
+                        "type": "write",
+                        "action": "subscribe",
+                        "app": "SendyCLIAPI@1.2.0",
+                        "params": { "email": "{{132161198__events[]subject__email}}", "list": "clients" }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "series_133631684",
+                    "type": "series",
+                    "steps": [
+                      {
+                        "id": "133631684",
+                        "type": "filter",
+                        "action": "filter",
+                        "app": "BranchingAPI",
+                        "title": "Client du cégep/université",
+                        "params": {
+                          "path_eval_index": 1,
+                          "filter_criteria": "[{\"id\":5,\"group\":500,\"key\":\"132161198__events[]subject__extra_attrs[]value\",\"value\":\"Cégep\",\"match\":\"icontains\",\"action\":\"continue\"}]"
+                        }
+                      },
+                      {
+                        "id": "133631685",
+                        "type": "write",
+                        "action": "unsubscribe",
+                        "app": "SendyCLIAPI@1.2.0",
+                        "params": { "email": "{{132161198__events[]subject__email}}", "list": "leads" }
+                      },
+                      {
+                        "id": "174511362",
+                        "type": "write",
+                        "action": "subscribe",
+                        "app": "SendyCLIAPI@1.2.0",
+                        "params": { "email": "{{132161198__events[]subject__email}}", "list": "clients-cegep" }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
