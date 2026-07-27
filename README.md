@@ -1,60 +1,101 @@
-# Pabbly → Code Extractor
+# Automation → Code Extractor
 
-A Chrome/Edge (Manifest V3) extension that captures a **Pabbly Connect** workflow and exports a clean schema you can hand to Claude to convert into code.
+A Chrome/Edge (Manifest V3) extension that captures **Pabbly Connect workflows** and **Zapier Zaps** and exports a clean schema you can hand to Claude to convert into code.
 
-It captures the workflow two ways:
+It detects which platform the tab is on and reskins itself accordingly — Pabbly blue on `pabbly.com`, Zapier orange on `zapier.com` — down to the toolbar icon and the nouns in the UI.
 
-1. **Network JSON** — patches `fetch`/`XHR` at page load and records the JSON Pabbly's own API returns (the real source of truth).
-2. **DOM scrape** — reads the on-screen step outline as a supplement/fallback.
-
-Then it normalizes both into a structured schema and gives you three exports.
+Both platforms produce the **same export schema**, so anything downstream (the migration prompt, your code generator) only has to understand one shape.
 
 ## Install (Chrome or Edge)
 
 1. Go to `chrome://extensions` (or `edge://extensions`).
 2. Turn on **Developer mode** (top-right).
 3. Click **Load unpacked** and select this folder (`automation-to-code`).
-4. Pin the extension so its icon is visible.
+4. Pin the extension. Clicking its icon opens the **side panel** (it stays open while you work — long bulk runs remain visible).
+
+> After updating the extension, **hard-reload the site tab** (Ctrl+Shift+R). A normal F5 can leave the old content script running; the panel detects this and tells you.
 
 ## Use
 
-1. Open a Pabbly Connect workflow in a tab and **reload the page once** with the extension installed (so the interceptor and content script are active).
-2. **Single workflow:** click **Auto-capture steps (this workflow)** in the popup. The extension mimics clicking each step open — which triggers Pabbly to load each step's config — then parses the live DOM for `app`, `event`, and field `mappings`. Then **Export** / **⬇** on the workflow card.
-3. **All workflows:** click **Export ALL workflows**. The extension navigates the tab through every workflow in the account, auto-expanding and parsing each (throttled to avoid hammering Pabbly). A progress bar shows status; when done, use **Copy all** / **Download all**. Don't use that tab while it runs.
-4. Use the **search bar** to filter by workflow name or app. Click a card to preview its export JSON.
-5. **Export list** (inventory panel) gives the full catalog of workflow names/IDs/webhook URLs without deep-parsing.
+1. Open Pabbly Connect or Zapier in a tab. The panel picks up the platform automatically.
+2. **Single item:** open a workflow / Zap and click **Auto-capture steps**. Then **Export** (copies JSON) or **⬇** (downloads it) on its card.
+3. **Whole account:** click **Export ALL**. When it finishes, use **Copy all**, **Download all**, **ZIP (1 file each)**, **NDJSON**, or **App report**.
+4. **Export list** in the inventory row gives the full catalog of names/IDs without deep-parsing anything.
+5. **Diagnostics** dumps what the extension actually saw — captured URLs, the learned API endpoint, selector counts. Start here when a capture comes back empty.
 
-### How extraction works (Pabbly specifics)
+## How extraction works
 
-Pabbly Connect is a server-rendered jQuery app. It does not return the workflow as one clean JSON document. Instead:
+The two platforms need completely different strategies, which is why each has its own adapter in `src/platforms/`.
 
-- The **full workflow inventory** (every automation in the account) is in the page's workflow-switcher `<select>` — the extension scrapes it into the **Export list** panel.
-- Each **step's configuration** is fetched on click as `{"status":"success","html":"…"}`, where `html` is the rendered config form. The extension parses that HTML to pull the step's `app`, `event`, and `mappings`. This is why you must click each step open before capturing.
-- If no step-config responses are captured yet, the extension falls back to a DOM **outline** of the steps (app names only, no field mappings).
+### Pabbly Connect — click and scrape
 
-### What the exported JSON contains
+Pabbly is a server-rendered jQuery app, not an SPA. There is no JSON document describing a workflow:
 
-Every exported workflow JSON has four top-level keys:
+- The **full inventory** lives in the page's workflow-switcher `<select>`.
+- Each **step's config** is fetched only when you click its header, arriving as `{"status":"success","html":"…"}`. The extension mimics those clicks, waits for each body, and parses the HTML.
+- **Routers** need their route modals opened one at a time, recursively (depth-capped at 3).
 
-- `systemPrompt` — a generic explainer telling the AI what this file is and how to read the schema (understand-only; it does not tell the AI how to write code).
-- `extension` — metadata about the extension and where the workflow was captured.
-- `schema` — the normalized workflow: `workflowName`, `confidence`, and ordered `steps[]` (each with `order`, `type`, `app`, `mappings`).
-- `raw` — the untouched JSON Pabbly returned for this workflow (source of truth).
+This is inherently slow — roughly one page load and a few seconds per workflow.
 
-## Notes
+### Zapier — learn the endpoint, then fetch
 
-- The normalizer is **heuristic** — it detects step arrays, apps, routers, filters, and field mappings by key names. The **raw JSON is always captured untouched**, so nothing is lost if detection is imperfect.
-- To tune it precisely: capture one real workflow, send the **Raw JSON**, and the normalizer can be adapted to Pabbly's exact field names.
-- Data is stored per-tab in `chrome.storage.session` and cleared when the tab closes or you click **Clear**.
+Zapier's editor is a Next.js SPA that loads the whole Zap as a JSON node graph, so nothing is clicked:
+
+1. **Learn** — among the responses the page fetched for itself, find the one carrying the node array, and turn its URL into a template by substituting the Zap id. Cached in `chrome.storage.local`.
+2. **Fetch** — every other Zap is then read in place with that template and your session cookie. No tab navigation, so a whole account takes seconds rather than minutes.
+3. **Fall back** — server-rendered `__NEXT_DATA__`, then a short list of candidate endpoints, then (reported to the crawler) navigate-and-parse like Pabbly.
+
+Zapier's endpoints are undocumented and can change, so the learned template always beats the guesses and every stage degrades rather than throwing.
+
+Zapier's flat node list is rebuilt into a tree via `parent_id`. **Paths by Zapier** becomes a `router` with one route per Path; `{{123456__field}}` tokens are resolved from node ids to step positions.
+
+## What the exported JSON contains
+
+| Key | Meaning |
+| ------ | ------ |
+| `systemPrompt` | Platform-specific explainer telling the AI how to read the file (understand-only). |
+| `schemaVersion` | Currently `2`. |
+| `platform` | `"pabbly"` or `"zapier"`. |
+| `extension` | Tool metadata and where the capture came from. |
+| `schema` | `workflowName`, `confidence`, `health`, `stepCount`, and ordered `steps[]`. |
+| `raw` | The untouched API payload when one exists; otherwise a short note (`schema.steps` is authoritative). |
+
+Each step: `order`, `type` (trigger / action / router / filter), `app`, `event`, `mappings[]` (with `references[]` for cross-step values), plus `filter[]` on conditions and `routes[]` on branches.
+
+`schema.health` is the extension's self-check: `level` (complete / partial / poor / failed), `score`, and `warnings[]` naming specific gaps. It reports whether data was **captured**, not whether it is **correct**.
+
+Bulk exports wrap the same per-item shape in `workflows[]` with an account-wide `health` summary. NDJSON lines are the bare workflow object, with no envelope.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `manifest.json` | MV3 config, content scripts, permissions |
-| `src/interceptor.js` | Runs in page (MAIN world), patches fetch/XHR |
-| `src/content.js` | Relays captures, scrapes DOM on demand |
-| `src/background.js` | Stores captures per tab |
-| `src/normalizer.js` | Detects workflows, inventory, builds export JSON |
-| `src/stepParser.js` | Parses Pabbly's `{status, html}` step config into app/event/mappings |
-| `src/popup.{html,css,js}` | Popup UI and exports |
+| `manifest.json` | MV3 config, permissions, per-platform content scripts |
+| `src/platforms/registry.js` | Branding, terminology, URLs and pacing per platform |
+| `src/platforms/pabbly-content.js` | Pabbly adapter — DOM scraping, step expansion, router crawl |
+| `src/platforms/zapier-content.js` | Zapier adapter — node graph, endpoint learning, in-place fetch |
+| `src/content.js` | Shared content-script shell: capture bridge and message routing |
+| `src/interceptor.js` | Runs in the page (MAIN world), records same-site fetch/XHR traffic |
+| `src/background.js` | Service worker: bulk crawler, per-tab branding, capture store |
+| `src/normalizer.js` | Export envelopes and the per-platform system prompts |
+| `src/health.js` | Completeness scoring and warnings |
+| `src/db.js` | IndexedDB store for bulk results (namespaced by platform) |
+| `src/zip.js` | Dependency-free ZIP writer |
+| `src/popup.{html,css,js}` | Side-panel UI, theming and exports |
+| `icons/make-icons.ps1` | Regenerates both icon sets |
+| `tests/run.mjs` | Golden-fixture suite — `npm test` |
+
+## Development
+
+```bash
+npm install
+npm test       # golden fixtures: real parsers against saved Pabbly HTML and Zapier JSON
+npm run check  # syntax-check every source file
+```
+
+Bump `CONTENT_VERSION` (`src/content.js`), `EXPECTED_CONTENT_VERSION` (`src/popup.js`) and `manifest.json` together — the handshake between them is what catches a stale content script.
+
+## Notes
+
+- Data is stored per tab in `chrome.storage.session` and cleared when the tab closes or you click **Clear**. Bulk results live in IndexedDB and survive a service-worker restart.
+- **Exports embed live credentials** — API keys, request headers, webhook URLs, connected-account details. Treat generated files as secrets: keep them out of version control and rotate anything that has been shared.

@@ -1,4 +1,9 @@
+/* The panel reskins to whichever platform the active tab is on. popup.js stamps
+   data-platform on <html>; everything below is driven off these variables, including the
+   status colours — the dark theme's greens and ambers are unreadable on Zapier's cream. */
+
 :root {
+  /* Pabbly — cool and dark */
   --bg: #0f1115;
   --panel: #171a21;
   --border: #2a2f3a;
@@ -6,6 +11,30 @@
   --muted: #9aa3b2;
   --accent: #5b8cff;
   --accent-d: #3f6fe0;
+  --on-accent: #fff;
+  --ok: #7ee0a0;
+  --warn: #ffcf6b;
+  --err: #ff8b8b;
+  --sunken: #0b0d11;
+  --shadow: rgba(0, 0, 0, .45);
+}
+
+/* Zapier — warm and light. These are Zapier's own values, taken from the editor's stylesheet
+   (#ff4a00 is their brand orange); the status trio is darkened for contrast on cream. */
+:root[data-platform="zapier"] {
+  --bg: #f9f7f3;
+  --panel: #fffefb;
+  --border: #ece9df;
+  --text: #413735;
+  --muted: #88827e;
+  --accent: #ff4a00;
+  --accent-d: #d93f00;
+  --on-accent: #fff;
+  --ok: #1f7a4d;
+  --warn: #a35b00;
+  --err: #c02a2a;
+  --sunken: #ece9df;
+  --shadow: rgba(65, 55, 53, .14);
 }
 
 * { box-sizing: border-box; }
@@ -41,9 +70,9 @@ h1 { font-size: 14px; margin: 0; display: flex; align-items: center; gap: 6px; }
   border-radius: 999px;
   padding: 2px 10px;
 }
-.status.ok { color: #7ee0a0; }
-.status.warn { color: #ffcf6b; }
-.status.err { color: #ff8b8b; }
+.status.ok { color: var(--ok); }
+.status.warn { color: var(--warn); }
+.status.err { color: var(--err); }
 
 .row { display: flex; gap: 8px; margin-bottom: 10px; }
 
@@ -58,7 +87,7 @@ button {
   transition: background .12s, border-color .12s;
 }
 button:hover { border-color: var(--accent); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 button.primary:hover { background: var(--accent-d); }
 button.ghost { background: transparent; color: var(--muted); }
 .row button { flex: 1; }
@@ -74,7 +103,7 @@ button.ghost { background: transparent; color: var(--muted); }
 .bulk-head { font-weight: 600; margin-bottom: 8px; }
 .bulk-bar {
   height: 6px;
-  background: #0b0d11;
+  background: var(--sunken);
   border-radius: 999px;
   overflow: hidden;
   margin-bottom: 10px;
@@ -145,16 +174,16 @@ button.ghost { background: transparent; color: var(--muted); }
   border: 1px solid var(--border);
   margin-left: 6px;
 }
-.pill.high { color: #7ee0a0; }
-.pill.medium { color: #ffcf6b; }
-.pill.low { color: #ff8b8b; }
+.pill.high { color: var(--ok); }
+.pill.medium { color: var(--warn); }
+.pill.low { color: var(--err); }
 
 .card .actions { display: flex; gap: 6px; flex-shrink: 0; }
 .card .actions button { padding: 6px 10px; }
 
 .bulk-note { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
 .bulk-sub { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
-.bulk-reason { color: #ffcf6b; font-size: 11px; margin-bottom: 8px; }
+.bulk-reason { color: var(--warn); font-size: 11px; margin-bottom: 8px; }
 .bulk .row + .row { margin-top: 8px; }
 
 .errlog {
@@ -162,7 +191,7 @@ button.ghost { background: transparent; color: var(--muted); }
   border-top: 1px solid var(--border);
   padding-top: 8px;
 }
-.errlog summary { cursor: pointer; color: #ff8b8b; font-size: 11px; }
+.errlog summary { cursor: pointer; color: var(--err); font-size: 11px; }
 .errlog ul { margin: 8px 0 0; padding-left: 16px; max-height: 120px; overflow: auto; }
 .errlog li { color: var(--muted); font-size: 11px; margin-bottom: 3px; word-break: break-word; }
 .errlog li b { color: var(--text); font-weight: 600; }
@@ -179,10 +208,10 @@ button.ghost { background: transparent; color: var(--muted); }
   cursor: pointer;
 }
 .chip:hover { border-color: var(--accent); }
-.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
 .card .warns {
-  color: #ffcf6b;
+  color: var(--warn);
   font-size: 10px;
   margin-top: 3px;
   white-space: nowrap;
@@ -216,11 +245,11 @@ button.ghost { background: transparent; color: var(--muted); }
   border-radius: 999px;
   padding: 6px 14px;
   font-size: 11px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+  box-shadow: 0 4px 14px var(--shadow);
   animation: toast-in .16s ease-out;
   max-width: 90%;
 }
-.toast.err { border-color: #ff8b8b; color: #ff8b8b; }
+.toast.err { border-color: var(--err); color: var(--err); }
 @keyframes toast-in {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
@@ -230,7 +259,7 @@ button.ghost { background: transparent; color: var(--muted); }
   margin-top: 10px;
   max-height: 220px;
   overflow: auto;
-  background: #0b0d11;
+  background: var(--sunken);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px;
@@ -240,3 +269,4 @@ button.ghost { background: transparent; color: var(--muted); }
   color: var(--muted);
 }
 .preview:empty { display: none; }
+

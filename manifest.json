@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Pabbly Code Extractor",
-  "version": "0.10.0",
-  "description": "Captures Pabbly Connect workflow data (network JSON + DOM) and exports a clean schema ready to hand to Claude for code conversion.",
+  "name": "Automation Code Extractor",
+  "version": "0.11.1",
+  "description": "Captures Pabbly Connect workflows and Zapier Zaps (network JSON + DOM) and exports a clean schema ready to hand to Claude for code conversion.",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms", "sidePanel"],
   "host_permissions": [
-    "*://*.pabbly.com/*"
+    "*://*.pabbly.com/*",
+    "*://*.zapier.com/*"
   ],
   "background": {
     "service_worker": "src/background.js",
@@ -18,7 +19,7 @@
     "128": "icons/icon128.png"
   },
   "action": {
-    "default_title": "Pabbly Code Extractor (opens side panel)",
+    "default_title": "Automation Code Extractor (opens side panel)",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -31,14 +32,20 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.pabbly.com/*"],
+      "matches": ["*://*.pabbly.com/*", "*://*.zapier.com/*"],
       "js": ["src/interceptor.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
       "matches": ["*://*.pabbly.com/*"],
-      "js": ["src/content.js"],
+      "js": ["src/platforms/pabbly-content.js", "src/content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    },
+    {
+      "matches": ["*://*.zapier.com/*"],
+      "js": ["src/platforms/zapier-content.js", "src/content.js"],
       "run_at": "document_start",
       "world": "ISOLATED"
     }

@@ -1,7 +1,30 @@
+# Generates the toolbar icon set. The extension swaps icons per tab, so there is one set per
+# platform: the default blue set in this folder, and a Zapier-orange set in ./zapier.
+#
+#   .\make-icons.ps1                                               # Pabbly / default (blue)
+#   .\make-icons.ps1 -Color1 '#FF4A00' -Color2 '#D93F00' -OutDir zapier   # Zapier (orange)
+
+param(
+  [string]$Color1 = '#5B8CFF',
+  [string]$Color2 = '#3F6FE0',
+  [string]$OutDir = '.',
+  [string]$Glyph = '{ }'
+)
+
 Add-Type -AssemblyName System.Drawing
 
-$dir = $PSScriptRoot
 $sizes = 16, 32, 48, 128
+$target = if ([System.IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $PSScriptRoot $OutDir }
+if (-not (Test-Path $target)) { New-Item -ItemType Directory -Force -Path $target | Out-Null }
+
+function ConvertTo-Color([string]$hex) {
+  $h = $hex.TrimStart('#')
+  return [System.Drawing.Color]::FromArgb(
+    [Convert]::ToInt32($h.Substring(0, 2), 16),
+    [Convert]::ToInt32($h.Substring(2, 2), 16),
+    [Convert]::ToInt32($h.Substring(4, 2), 16)
+  )
+}
 
 function New-RoundedPath([int]$w, [int]$h, [int]$r) {
   $path = New-Object System.Drawing.Drawing2D.GraphicsPath
@@ -14,6 +37,9 @@ function New-RoundedPath([int]$w, [int]$h, [int]$r) {
   return $path
 }
 
+$c1 = ConvertTo-Color $Color1
+$c2 = ConvertTo-Color $Color2
+
 foreach ($s in $sizes) {
   $bmp = New-Object System.Drawing.Bitmap $s, $s
   $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -24,12 +50,9 @@ foreach ($s in $sizes) {
   $path = New-RoundedPath $s $s $radius
 
   $rect = New-Object System.Drawing.Rectangle 0, 0, $s, $s
-  $c1 = [System.Drawing.Color]::FromArgb(91, 140, 255)
-  $c2 = [System.Drawing.Color]::FromArgb(63, 111, 224)
   $grad = New-Object System.Drawing.Drawing2D.LinearGradientBrush $rect, $c1, $c2, 45.0
   $g.FillPath($grad, $path)
 
-  $txt = "{ }"
   $fontSize = [Math]::Max(6.0, $s * 0.46)
   $font = New-Object System.Drawing.Font "Segoe UI", $fontSize, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
   $fmt = New-Object System.Drawing.StringFormat
@@ -37,10 +60,11 @@ foreach ($s in $sizes) {
   $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
   $white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
   $textRect = New-Object System.Drawing.RectangleF 0, 0, $s, $s
-  $g.DrawString($txt, $font, $white, $textRect, $fmt)
+  $g.DrawString($Glyph, $font, $white, $textRect, $fmt)
 
   $g.Dispose()
-  $bmp.Save((Join-Path $dir "icon$s.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+  $out = Join-Path $target "icon$s.png"
+  $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
   $bmp.Dispose()
-  Write-Output "wrote icon$s.png"
+  Write-Output "wrote $out"
 }

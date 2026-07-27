@@ -10,6 +10,7 @@ import {
 import { getAllResults, getFailedResults } from "./db.js";
 import { levelPill } from "./health.js";
 import { makeZip } from "./zip.js";
+import { platformOrNeutral, NEUTRAL, exportName } from "./platforms/registry.js";
 
 const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
@@ -20,10 +21,12 @@ const inventoryEl = $("inventory");
 const bulkEl = $("bulk");
 const filtersEl = $("filters");
 const toastsEl = $("toasts");
+const brandEl = $("brand");
 
 const RENDER_CHUNK = 100;
 
 let state = {
+  platform: NEUTRAL,
   workflows: [],
   captures: [],
   dom: null,
@@ -33,6 +36,10 @@ let state = {
   levels: [],
   renderLimit: RENDER_CHUNK
 };
+
+const terms = () => state.platform.terms;
+const platformId = () => state.platform.id;
+const supported = () => !!state.platform.id;
 
 const setStatus = (text, cls = "") => {
   statusEl.textContent = text;
@@ -52,24 +59,42 @@ const activeTab = async () => {
   return tab;
 };
 
-const isPabbly = (tab) => tab && /pabbly\.com/.test(tab.url || "");
+// Everything the panel says about the current site — colours, brand word, nouns — comes from here.
+// The theme itself is CSS: stamping data-platform on <html> swaps the whole variable block.
+const applyPlatform = (tab) => {
+  const next = platformOrNeutral(tab && tab.url);
+  const changed = next.id !== state.platform.id;
+  state.platform = next;
 
-const EXPECTED_CONTENT_VERSION = "0.10.0";
+  if (next.id) document.documentElement.dataset.platform = next.id;
+  else delete document.documentElement.dataset.platform;
+
+  brandEl.textContent = next.label;
+  document.title = `${next.label} Code Extractor`;
+  $("captureSteps").textContent = `Auto-capture steps (this ${next.terms.unit})`;
+  $("exportAll").textContent = `Export ALL ${next.terms.unitPlural}`;
+  searchEl.placeholder = `Search ${next.terms.unitPlural}…`;
+  return changed;
+};
+
+const notSupported = () => setStatus("not a Pabbly or Zapier tab", "err");
+
+const EXPECTED_CONTENT_VERSION = "0.11.1";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });
   if (!ping) {
     setStatus("no script on page — hard-reload it (Ctrl+Shift+R)", "err");
     previewEl.textContent =
-      "The content script isn't responding on this tab. Press Ctrl+Shift+R on the Pabbly page, then try again.";
+      `The content script isn't responding on this tab. Press Ctrl+Shift+R on the ${state.platform.label} page, then try again.`;
     return false;
   }
   if (ping.version !== EXPECTED_CONTENT_VERSION) {
     setStatus(`old script v${ping.version || "?"} — hard-reload (Ctrl+Shift+R)`, "err");
     previewEl.textContent =
-      `The Pabbly page is running content script v${ping.version || "unknown"}, but this popup expects ` +
-      `v${EXPECTED_CONTENT_VERSION}. The page kept the old script. Press Ctrl+Shift+R on the Pabbly page ` +
-      `(a normal F5 is not always enough), then click Auto-capture again.`;
+      `The ${state.platform.label} page is running content script v${ping.version || "unknown"}, but this panel ` +
+      `expects v${EXPECTED_CONTENT_VERSION}. The page kept the old script. Press Ctrl+Shift+R on the ` +
+      `${state.platform.label} page (a normal F5 is not always enough), then try again.`;
     return false;
   }
   return true;
@@ -83,11 +108,11 @@ const getCaptures = async (tabId) => {
 
 const STATE_KEY = (tabId) => `popupState_${tabId}`;
 
-// Bulk results live in IndexedDB, never in storage.local — 1044 deep workflow trees would blow
+// Bulk results live in IndexedDB, never in storage.local — 1000+ deep workflow trees would blow
 // past its ~10MB quota. For a bulk view we persist only the lightweight view settings.
 const saveState = async () => {
   const tab = await activeTab();
-  if (!tab || !isPabbly(tab)) return;
+  if (!tab || !supported()) return;
   const light = { source: state.source, selectedId: state.selectedId, query: state.query, levels: state.levels };
   const payload =
     state.source === "bulk" ? light : { ...light, workflows: state.workflows, dom: state.dom };
@@ -149,10 +174,13 @@ const saveBlob = (blob, filename) => {
 const download = (text, filename) =>
   saveBlob(new Blob([text], { type: "application/json;charset=utf-8" }), filename);
 
+const fileFor = (suffix, ext = "json") => exportName(state.platform, suffix, ext);
+const unitsSlug = () => terms().unitPlural.toLowerCase();
+
 const safeName = (name) =>
   (name || "workflow").replace(/[^a-z0-9-_]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "workflow";
 
-const exportJson = (wf) => JSON.stringify(buildExport(wf), null, 2);
+const exportJson = (wf) => JSON.stringify(buildExport(wf, state.platform), null, 2);
 
 const el = (tag, props = {}, children = []) => {
   const node = Object.assign(document.createElement(tag), props);
@@ -223,7 +251,7 @@ const buildCard = (wf) => {
   const exportBtn = el("button", { type: "button", className: "primary", textContent: "Export" });
   exportBtn.addEventListener("click", (e) => {
     e.stopPropagation();
-    copy(exportJson(wf), "Workflow JSON copied");
+    copy(exportJson(wf), `${terms().Unit} JSON copied`);
   });
 
   const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download JSON" });
@@ -297,14 +325,16 @@ const renderList = () => {
       el("div", {
         className: "empty",
         textContent: state.workflows.length
-          ? "No workflows match your search/filter."
-          : "No workflow parsed. Open a Pabbly workflow, then use Auto-capture steps."
+          ? `No ${terms().unitPlural} match your search/filter.`
+          : supported()
+            ? `Nothing parsed yet. Open a ${state.platform.label} ${terms().unit}, then use Auto-capture steps.`
+            : "Open a Pabbly Connect or Zapier tab to begin."
       })
     );
     return;
   }
 
-  // 1044 cards will not render acceptably, so the list grows in chunks on demand.
+  // Thousands of cards will not render acceptably, so the list grows in chunks on demand.
   const shown = items.slice(0, state.renderLimit);
   shown.forEach((wf) => listEl.appendChild(buildCard(wf)));
 
@@ -335,35 +365,38 @@ const renderInventory = () => {
   const inv = state.dom && state.dom.inventory ? state.dom.inventory : [];
   if (!inv.length) return;
 
-  const label = el("div", { className: "inv-label", textContent: `All workflows in account: ${inv.length}` });
+  const payload = () => JSON.stringify(buildInventoryExport(inv, state.dom.url, state.platform), null, 2);
+  const label = el("div", {
+    className: "inv-label",
+    textContent: `All ${terms().unitPlural} in account: ${inv.length}`
+  });
   const copyBtn = el("button", { type: "button", className: "primary", textContent: "Export list" });
-  copyBtn.addEventListener("click", () =>
-    copy(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), "Inventory copied")
-  );
+  copyBtn.addEventListener("click", () => copy(payload(), "Inventory copied"));
   const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download list" });
   dlBtn.appendChild(makeIcon(ICON_DOWNLOAD));
-  dlBtn.addEventListener("click", () =>
-    download(JSON.stringify(buildInventoryExport(inv, state.dom.url), null, 2), "pabbly-workflow-inventory.json")
-  );
+  dlBtn.addEventListener("click", () => download(payload(), fileFor(`${terms().unit.toLowerCase()}-inventory`)));
   const actions = el("div", { className: "actions" }, [copyBtn, dlBtn]);
   inventoryEl.appendChild(el("div", { className: "inv-row" }, [label, actions]));
 };
+
+const storedResults = () => getAllResults(platformId() || undefined);
 
 const resultsToWorkflows = (results) =>
   results.map((r, i) => ({
     ...workflowFromParsed(r.name, r.url, r.steps, r.error),
     id: r.id || `res_${i}`,
     name: r.name,
-    host: "connect.pabbly.com",
+    platform: r.platform || platformId(),
+    host: state.platform.host || null,
     stepArrayPath: "(bulk capture)",
     rawBody: {
-      note: "Bulk live-page capture. schema.steps holds the full captured detail.",
+      note: "Bulk capture. schema.steps holds the full captured detail.",
       ...(r.error ? { error: r.error } : {})
     }
   }));
 
 const loadResultsIntoList = async () => {
-  const results = await getAllResults();
+  const results = await storedResults();
   if (!results.length) return false;
   state.workflows = resultsToWorkflows(results);
   state.source = "bulk";
@@ -375,8 +408,11 @@ const loadResultsIntoList = async () => {
 };
 
 const bulkExportPayload = async () => {
-  const results = await getAllResults();
-  return buildBulkExport(results.map((r) => workflowFromParsed(r.name, r.url, r.steps, r.error)));
+  const results = await storedResults();
+  return buildBulkExport(
+    results.map((r) => workflowFromParsed(r.name, r.url, r.steps, r.error)),
+    state.platform
+  );
 };
 
 const renderBulk = (bulk) => {
@@ -392,7 +428,7 @@ const renderBulk = (bulk) => {
     ? `Bulk capture: ${done}/${total}…`
     : bulk.paused
       ? `Paused at ${done}/${total}`
-      : `Bulk done: ${bulk.done || done} workflows`;
+      : `Bulk done: ${bulk.done || done} ${terms().unitPlural}`;
   bulkEl.appendChild(
     el("div", { className: "bulk-head", textContent: errors ? `${headText} · ${errors} errors` : headText })
   );
@@ -401,13 +437,21 @@ const renderBulk = (bulk) => {
   bar.appendChild(el("span", { style: `width:${total ? Math.round((done / total) * 100) : 0}%` }));
   bulkEl.appendChild(bar);
 
+  if (bulk.direct) {
+    bulkEl.appendChild(
+      el("div", { className: "bulk-note", textContent: "Reading in place via the site API — the tab stays put." })
+    );
+  }
+
   if (bulk.startedAt && done > 0) {
     const elapsed = Date.now() - bulk.startedAt;
     const eta = running ? (elapsed / done) * (total - done) : 0;
     const parts = [`elapsed ${fmtDuration(elapsed)}`];
     if (running) parts.push(`~${fmtDuration(eta)} remaining`);
-    parts.push(`${Math.round(elapsed / done / 1000)}s/workflow`);
-    if (bulk.throttleMs && bulk.throttleMs > 1500) parts.push(`throttled ${Math.round(bulk.throttleMs / 1000)}s`);
+    parts.push(`${(elapsed / done / 1000).toFixed(1)}s/${terms().unit.toLowerCase()}`);
+    if (bulk.throttleMs && bulk.throttleMs > (bulk.baseThrottleMs || 1500)) {
+      parts.push(`throttled ${Math.round(bulk.throttleMs / 1000)}s`);
+    }
     bulkEl.appendChild(el("div", { className: "bulk-sub", textContent: parts.join(" · ") }));
   }
 
@@ -439,11 +483,11 @@ const renderBulk = (bulk) => {
   if (bulk.stored) {
     const copyAll = el("button", { type: "button", className: "primary", textContent: "Copy all" });
     copyAll.addEventListener("click", async () =>
-      copy(JSON.stringify(await bulkExportPayload(), null, 2), "All workflows copied")
+      copy(JSON.stringify(await bulkExportPayload(), null, 2), `All ${terms().unitPlural} copied`)
     );
     const dlAll = el("button", { type: "button", className: "ghost", textContent: "Download all" });
     dlAll.addEventListener("click", async () =>
-      download(JSON.stringify(await bulkExportPayload(), null, 2), "pabbly-all-workflows.json")
+      download(JSON.stringify(await bulkExportPayload(), null, 2), fileFor(`all-${unitsSlug()}`))
     );
     row.appendChild(copyAll);
     row.appendChild(dlAll);
@@ -454,10 +498,10 @@ const renderBulk = (bulk) => {
   if (bulk.stored) {
     const row2 = el("div", { className: "row" });
 
-    // One file per workflow: a single 1044-workflow JSON will not fit any model's context window.
+    // One file per item: a single account-wide JSON will not fit any model's context window.
     const zipBtn = el("button", { type: "button", className: "ghost", textContent: "ZIP (1 file each)" });
     zipBtn.addEventListener("click", async () => {
-      const results = await getAllResults();
+      const results = await storedResults();
       const seen = new Map();
       const files = results.map((r) => {
         const base = safeName(r.name);
@@ -467,33 +511,39 @@ const renderBulk = (bulk) => {
         return {
           name: `${base}${n > 1 ? `-${n}` : ""}.json`,
           data: JSON.stringify(
-            buildExport({
-              ...wf,
-              name: wf.workflowName,
-              rawBody: { note: "Bulk live-page capture. schema.steps holds the full captured detail." }
-            }),
+            buildExport(
+              {
+                ...wf,
+                name: wf.workflowName,
+                rawBody: { note: "Bulk capture. schema.steps holds the full captured detail." }
+              },
+              state.platform
+            ),
             null,
             2
           )
         };
       });
-      saveBlob(makeZip(files), "pabbly-workflows.zip");
+      saveBlob(makeZip(files), fileFor(unitsSlug(), "zip"));
     });
 
     const ndBtn = el("button", { type: "button", className: "ghost", textContent: "NDJSON" });
     ndBtn.addEventListener("click", async () => {
-      const results = await getAllResults();
+      const results = await storedResults();
       const lines = results
         .map((r) => JSON.stringify(workflowFromParsed(r.name, r.url, r.steps, r.error)))
         .join("\n");
-      saveBlob(new Blob([lines], { type: "application/x-ndjson;charset=utf-8" }), "pabbly-workflows.ndjson");
+      saveBlob(
+        new Blob([lines], { type: "application/x-ndjson;charset=utf-8" }),
+        fileFor(unitsSlug(), "ndjson")
+      );
     });
 
     const reportBtn = el("button", { type: "button", className: "ghost", textContent: "App report" });
     reportBtn.addEventListener("click", async () => {
-      const results = await getAllResults();
+      const results = await storedResults();
       const wfs = results.map((r) => workflowFromParsed(r.name, r.url, r.steps, r.error));
-      download(JSON.stringify(buildAppReport(wfs), null, 2), "pabbly-app-report.json");
+      download(JSON.stringify(buildAppReport(wfs, state.platform), null, 2), fileFor("app-report"));
     });
 
     row2.appendChild(zipBtn);
@@ -514,11 +564,11 @@ const renderBulk = (bulk) => {
       const retry = el("button", { type: "button", className: "ghost", textContent: `Retry ${errors} failed` });
       retry.addEventListener("click", async () => {
         const tab = await activeTab();
-        if (!isPabbly(tab)) return setStatus("open a Pabbly tab first", "err");
-        const failed = await getFailedResults();
-        if (!failed.length) return toast("No failed workflows to retry", "err");
-        await sendRuntime({ type: "retryFailed", tabId: tab.id, batchSize: 50 });
-        toast(`Retrying ${failed.length} failed workflows`);
+        if (!supported()) return notSupported();
+        const failed = await getFailedResults(platformId());
+        if (!failed.length) return toast(`No failed ${terms().unitPlural} to retry`, "err");
+        await sendRuntime({ type: "retryFailed", tabId: tab.id, platform: platformId(), batchSize: 50 });
+        toast(`Retrying ${failed.length} failed ${terms().unitPlural}`);
         pollBulk();
       });
       row3.appendChild(retry);
@@ -556,9 +606,13 @@ const pollBulk = async () => {
 const refresh = async () => {
   setStatus("reading…");
   const tab = await activeTab();
-  if (!isPabbly(tab)) {
-    setStatus("not a Pabbly tab", "err");
+  applyPlatform(tab);
+  if (!supported()) {
+    notSupported();
     state.workflows = [];
+    state.dom = null;
+    inventoryEl.textContent = "";
+    filtersEl.textContent = "";
     renderList();
     return;
   }
@@ -573,7 +627,7 @@ const refresh = async () => {
     ? { url: last.url, currentWorkflowName: last.name, inventory: (dom && dom.inventory) || [], steps: last.steps }
     : dom;
 
-  const fromDom = domWorkflow(state.dom);
+  const fromDom = domWorkflow(state.dom, state.platform);
   const fromJson = !fromDom ? detectWorkflows(captures) : [];
   state.workflows = fromDom ? [fromDom] : fromJson;
   state.source = "single";
@@ -594,12 +648,16 @@ const refresh = async () => {
 
 $("captureSteps").addEventListener("click", async () => {
   const tab = await activeTab();
-  if (!isPabbly(tab)) return setStatus("not a Pabbly tab", "err");
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
   if (!(await checkContentVersion(tab.id))) return;
-  setStatus("expanding steps + routes… please wait", "warn");
+  setStatus(
+    platformId() === "zapier" ? "reading the Zap definition…" : "expanding steps + routes… please wait",
+    "warn"
+  );
 
   const res = await sendTab(tab.id, { type: "expandAndParse", stepDelay: 1300 });
-  if (!res || !res.steps) return setStatus("expand failed — reload the page", "err");
+  if (!res || !res.steps) return setStatus("capture failed — reload the page", "err");
 
   const dom = await sendTab(tab.id, { type: "scrapeDom" });
   state.dom = {
@@ -610,7 +668,7 @@ $("captureSteps").addEventListener("click", async () => {
   };
   state.captures = await getCaptures(tab.id);
 
-  const wf = domWorkflow(state.dom);
+  const wf = domWorkflow(state.dom, state.platform);
   state.workflows = wf ? [wf] : [];
   state.source = "single";
   state.selectedId = wf ? wf.id : null;
@@ -630,28 +688,57 @@ $("captureSteps").addEventListener("click", async () => {
   if (!total) {
     previewEl.textContent =
       "DIAGNOSTIC — nothing parsed. Copy this whole block and send it.\n" +
-      "If census.before.webhook_api_mapping_div is 0, the new content script isn't running " +
-      "(hard-reload the page with Ctrl+Shift+R). If it's >0 but debug rows show app:null, " +
-      "the step bodies didn't load in time.\n\n" +
+      (platformId() === "zapier"
+        ? "If `error` mentions no definition found, open the Zap in the editor and let it finish loading, " +
+          "then capture again. `capturedUrls` shows what the page actually fetched.\n\n"
+        : "If census.before.webhook_api_mapping_div is 0, the new content script isn't running " +
+          "(hard-reload the page with Ctrl+Shift+R). If it's >0 but debug rows show app:null, " +
+          "the step bodies didn't load in time.\n\n") +
       JSON.stringify(res.expand, null, 2);
   }
 });
 
 $("exportAll").addEventListener("click", async () => {
   const tab = await activeTab();
-  if (!isPabbly(tab)) return setStatus("not a Pabbly tab", "err");
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
   if (!(await checkContentVersion(tab.id))) return;
   const dom = state.dom || (await sendTab(tab.id, { type: "scrapeDom" }));
   const inv = dom && dom.inventory ? dom.inventory : [];
-  if (!inv.length) return setStatus("no workflow list found", "err");
+  if (!inv.length) return setStatus(`no ${terms().unit} list found`, "err");
 
   // No confirm() here on purpose: native dialogs tear down the extension popup,
   // which kills this handler before startBulk is ever sent.
   const workflows = inv.map((i) => ({ id: i.id, name: i.name }));
-  await sendRuntime({ type: "startBulk", tabId: tab.id, workflows, batchSize: 50 });
-  setStatus(`bulk capture started · ${inv.length} workflows`, "warn");
-  toast(`Capturing ${inv.length} workflows — leave this tab alone`);
+  const started = await sendRuntime({
+    type: "startBulk",
+    tabId: tab.id,
+    platform: platformId(),
+    workflows,
+    batchSize: state.platform.bulk.batchSize
+  });
+  setStatus(`bulk capture started · ${inv.length} ${terms().unitPlural}`, "warn");
+  toast(
+    started && started.direct
+      ? `Reading ${inv.length} ${terms().unitPlural} in place`
+      : `Capturing ${inv.length} ${terms().unitPlural} — leave this tab alone`
+  );
   pollBulk();
+});
+
+$("diagnose").addEventListener("click", async () => {
+  const tab = await activeTab();
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
+  const diag = await sendTab(tab.id, { type: "diagnostics" });
+  const payload = {
+    panelExpectsContentVersion: EXPECTED_CONTENT_VERSION,
+    tabUrl: tab.url,
+    detectedPlatform: platformId(),
+    ...(diag || { error: "content script did not respond — hard-reload the page (Ctrl+Shift+R)" })
+  };
+  previewEl.textContent = JSON.stringify(payload, null, 2);
+  await copy(JSON.stringify(payload, null, 2), "Diagnostics copied");
 });
 
 searchEl.addEventListener("input", () => {
@@ -675,6 +762,7 @@ $("clear").addEventListener("click", async () => {
     bulkTimer = null;
   }
   state = {
+    platform: state.platform,
     workflows: [],
     captures: [],
     dom: null,
@@ -694,18 +782,34 @@ $("clear").addEventListener("click", async () => {
 });
 
 $("copyRaw").addEventListener("click", () => copy(JSON.stringify(state.captures, null, 2), "Raw captures copied"));
-$("dlRaw").addEventListener("click", () => download(JSON.stringify(state.captures, null, 2), "pabbly-raw-captures.json"));
+$("dlRaw").addEventListener("click", () =>
+  download(JSON.stringify(state.captures, null, 2), fileFor("raw-captures"))
+);
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg) return;
   if (msg.type === "bulkProgress" || msg.type === "bulkDone" || msg.type === "bulkPaused") pollBulk();
-  if (msg.type === "bulkDone") toast(`Bulk capture finished · ${msg.count} workflows`);
+  if (msg.type === "bulkDone") toast(`Bulk capture finished · ${msg.count} ${terms().unitPlural}`);
   if (msg.type === "bulkPaused" && msg.reason) toast(msg.reason, "err");
+  if (msg.type === "bulkNote" && msg.message) toast(msg.message);
+});
+
+// The side panel outlives tab switches, so it re-themes and re-reads whenever the active tab
+// changes platform — otherwise a Zapier panel would stay orange over a Pabbly page.
+const onTabChanged = async () => {
+  const tab = await activeTab();
+  if (applyPlatform(tab)) refresh();
+};
+
+chrome.tabs.onActivated.addListener(onTabChanged);
+chrome.tabs.onUpdated.addListener((_tabId, info) => {
+  if (info.status === "complete") onTabChanged();
 });
 
 const init = async () => {
   const tab = await activeTab();
-  const saved = tab && isPabbly(tab) ? await loadState(tab.id) : null;
+  applyPlatform(tab);
+  const saved = tab && supported() ? await loadState(tab.id) : null;
 
   if (saved) {
     state.selectedId = saved.selectedId || null;

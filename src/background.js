@@ -1,9 +1,9 @@
 import { putResult, clearResults, getFailedResults, countResults } from "./db.js";
+import { PLATFORMS, NEUTRAL, detectPlatform, platformById } from "./platforms/registry.js";
 
 const keyFor = (tabId) => `captures_${tabId}`;
 const MAX_CAPTURES = 400;
 const BULK_KEY = "bulk_state";
-const MAPPING_BASE = "https://connect.pabbly.com/workflow/mapping/";
 const PER_WORKFLOW_MS = 240000;
 const STALL_MS = 300000;
 const DEFAULT_BATCH = 50;
@@ -12,6 +12,7 @@ const MAX_THROTTLE = 30000;
 const BACKOFF_AFTER = 3;
 const PAUSE_AFTER = 6;
 const LOG_LIMIT = 50;
+const LOOP_GUARD = 10000;
 
 const getState = async () => (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || null;
 const setState = (state) => chrome.storage.local.set({ [BULK_KEY]: state });
@@ -23,6 +24,8 @@ const notify = (m) => {
     chrome.runtime.sendMessage(m);
   } catch (_) {}
 };
+
+const platformOf = (state) => platformById(state && state.platform) || PLATFORMS.pabbly;
 
 let processing = false;
 
@@ -37,9 +40,9 @@ const sendWhenReady = async (tabId, msg, tries = 20, gap = 600) => {
   return null;
 };
 
-const navigateTo = (tabId, id) => {
+const navigateTo = (tabId, id, platform) => {
   try {
-    chrome.tabs.update(tabId, { url: MAPPING_BASE + id });
+    chrome.tabs.update(tabId, { url: (platform || PLATFORMS.pabbly).editorUrl(id) });
   } catch (_) {}
 };
 
@@ -52,9 +55,11 @@ const tabUrl = async (tabId) => {
   }
 };
 
-// Pabbly bounces to a login/signin page once the session dies. Over a multi-hour run this is the
-// single most likely failure, and without detection it silently produces hundreds of empty results.
-const looksLoggedOut = (url) => /\/(login|signin|sign-in|auth)\b/i.test(url || "");
+// Both sites bounce to a login page once the session dies. Over a long run this is the single most
+// likely failure, and without detection it silently produces hundreds of empty results.
+const isLoggedOut = (platform, url) => !!platform.loggedOutRe && platform.loggedOutRe.test(url || "");
+const sessionExpired = (platform) =>
+  `${platform.label} session expired — log back in on this tab, then Resume`;
 
 const pushLog = (state, entry) => {
   state.log = state.log || [];
@@ -79,9 +84,12 @@ const finalize = async (state) => {
   notify({ type: "bulkDone", count: state.done });
 };
 
+// Records the result and decides what the run does next. Returns "continue" | "paused" | "done" so
+// the caller owns the actual navigation or next fetch — that split is what lets one loop drive an
+// in-place run and the tab-navigation callback drive the other.
 const advance = async (state, result) => {
-  // Written one at a time to IndexedDB: a crash mid-run never costs the whole run, and the
-  // 1044-workflow payload never has to fit in chrome.storage.local's ~10MB quota.
+  // Written one at a time to IndexedDB: a crash mid-run never costs the whole run, and a
+  // 1000-workflow payload never has to fit in chrome.storage.local's ~10MB quota.
   try {
     await putResult({ ...result, runId: state.runId });
   } catch (e) {
@@ -98,10 +106,10 @@ const advance = async (state, result) => {
     pushLog(state, { id: result.id, name: result.name, error: result.error, at: Date.now() });
   } else {
     state.consecutiveErrors = 0;
-    state.throttleMs = Math.max(BASE_THROTTLE, Math.round((state.throttleMs || BASE_THROTTLE) * 0.7));
+    state.throttleMs = Math.max(state.baseThrottleMs || BASE_THROTTLE, Math.round((state.throttleMs || BASE_THROTTLE) * 0.7));
   }
 
-  // Adaptive backoff: repeated failures usually mean Pabbly is throttling us or the session is sick.
+  // Adaptive backoff: repeated failures usually mean the site is throttling us or the session is sick.
   if (state.consecutiveErrors >= BACKOFF_AFTER) {
     state.throttleMs = Math.min(MAX_THROTTLE, (state.throttleMs || BASE_THROTTLE) * 2);
   }
@@ -110,58 +118,121 @@ const advance = async (state, result) => {
   notify({ type: "bulkProgress", index: state.index, total: state.queue.length });
 
   if (state.consecutiveErrors >= PAUSE_AFTER) {
-    return pauseRun(state, `${state.consecutiveErrors} failures in a row — check the tab, then Resume`);
+    await pauseRun(state, `${state.consecutiveErrors} failures in a row — check the tab, then Resume`);
+    return "paused";
   }
 
-  if (state.index >= state.queue.length) return finalize(state);
+  if (state.index >= state.queue.length) {
+    await finalize(state);
+    return "done";
+  }
 
   if (state.batchSize && state.index % state.batchSize === 0) {
-    return pauseRun(state, `batch of ${state.batchSize} complete`);
+    await pauseRun(state, `batch of ${state.batchSize} complete`);
+    return "paused";
   }
 
-  await delay(state.throttleMs || BASE_THROTTLE);
-  navigateTo(state.tabId, state.queue[state.index].id);
+  return "continue";
+};
+
+const errorResult = (item, platform, error) => ({
+  id: item.id,
+  platform: platform.id,
+  name: item.name,
+  error,
+  steps: []
+});
+
+// In-place capture: the adapter fetches the automation from the site's own API with the session
+// cookie, so the tab never moves. Only used when prepareBulk said it could.
+const captureDirect = async (state, platform, item) => {
+  try {
+    const res = await withTimeout(
+      chrome.tabs.sendMessage(state.tabId, { type: "captureById", id: item.id, name: item.name }),
+      state.perWorkflowMs || PER_WORKFLOW_MS
+    );
+    if (res && res.steps) {
+      return {
+        id: item.id,
+        platform: platform.id,
+        name: item.name || res.name,
+        url: res.url,
+        steps: res.steps
+      };
+    }
+    if (res && res.needsNavigation) {
+      return errorResult(item, platform, res.error || "in-place capture unavailable for this item");
+    }
+    return errorResult(item, platform, (res && res.error) || "capture failed");
+  } catch (e) {
+    return errorResult(item, platform, String((e && e.message) || e));
+  }
+};
+
+// Navigation capture: the crawler has already pointed the tab at this item, so wait for the content
+// script and ask it to expand and parse whatever is on screen.
+const captureNavigated = async (state, platform, item) => {
+  const ready = await sendWhenReady(state.tabId, { type: "ping" });
+  if (!ready) {
+    const after = await tabUrl(state.tabId);
+    if (isLoggedOut(platform, after)) return { loggedOut: true };
+    return errorResult(item, platform, "page not ready");
+  }
+
+  await delay(state.settleMs || 1500);
+  try {
+    const parsed = await withTimeout(
+      chrome.tabs.sendMessage(state.tabId, { type: "expandAndParse", stepDelay: state.stepDelay || 1200 }),
+      state.perWorkflowMs || PER_WORKFLOW_MS
+    );
+    if (parsed && parsed.steps) {
+      return {
+        id: item.id,
+        platform: platform.id,
+        name: item.name || parsed.name,
+        url: parsed.url,
+        steps: parsed.steps
+      };
+    }
+    return errorResult(item, platform, (parsed && parsed.error) || "parse failed");
+  } catch (e) {
+    return errorResult(item, platform, String((e && e.message) || e));
+  }
 };
 
 const processCurrent = async () => {
   if (processing) return;
-  const state = await getState();
-  if (!state || !state.active || state.paused) return;
   processing = true;
   try {
-    const item = state.queue[state.index];
-    if (!item) return finalize(state);
-    const tabId = state.tabId;
+    // An in-place run drives itself round this loop; a navigation run does one item and returns,
+    // and tabs.onUpdated calls back in once the next page has loaded.
+    for (let guard = 0; guard < LOOP_GUARD; guard++) {
+      const state = await getState();
+      if (!state || !state.active || state.paused) return;
 
-    const url = await tabUrl(tabId);
-    if (looksLoggedOut(url)) {
-      return pauseRun(state, "Pabbly session expired — log back in on this tab, then Resume");
-    }
+      const item = state.queue[state.index];
+      if (!item) return finalize(state);
 
-    let result;
-    const ready = await sendWhenReady(tabId, { type: "ping" });
-    if (!ready) {
-      const after = await tabUrl(tabId);
-      if (looksLoggedOut(after)) {
-        return pauseRun(state, "Pabbly session expired — log back in on this tab, then Resume");
+      const platform = platformOf(state);
+
+      if (isLoggedOut(platform, await tabUrl(state.tabId))) {
+        return pauseRun(state, sessionExpired(platform));
       }
-      result = { id: item.id, name: item.name, error: "page not ready", steps: [] };
-    } else {
-      await delay(state.settleMs || 1500);
-      try {
-        const parsed = await withTimeout(
-          chrome.tabs.sendMessage(tabId, { type: "expandAndParse", stepDelay: state.stepDelay || 1200 }),
-          state.perWorkflowMs || PER_WORKFLOW_MS
-        );
-        result =
-          parsed && parsed.steps
-            ? { id: item.id, name: item.name || parsed.name, url: parsed.url, steps: parsed.steps }
-            : { id: item.id, name: item.name, error: "parse failed", steps: [] };
-      } catch (e) {
-        result = { id: item.id, name: item.name, error: String((e && e.message) || e), steps: [] };
+
+      const result = state.direct
+        ? await captureDirect(state, platform, item)
+        : await captureNavigated(state, platform, item);
+
+      if (result.loggedOut) return pauseRun(state, sessionExpired(platform));
+
+      if (await advance(state, result) !== "continue") return;
+
+      await delay(state.throttleMs || BASE_THROTTLE);
+      if (!state.direct) {
+        navigateTo(state.tabId, state.queue[state.index].id, platform);
+        return;
       }
     }
-    await advance(state, result);
   } finally {
     processing = false;
   }
@@ -175,7 +246,7 @@ const watchdog = async () => {
     processing = false;
     const item = state.queue[state.index];
     if (item) {
-      await advance(state, { id: item.id, name: item.name, error: "watchdog timeout", steps: [] });
+      await advance(state, errorResult(item, platformOf(state), "watchdog timeout"));
     }
     return;
   }
@@ -186,36 +257,54 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "bulkWatch") watchdog();
 });
 
-const newRun = (msg, queue) => ({
-  active: true,
-  paused: false,
-  pauseReason: null,
-  runId: `run_${Date.now()}`,
-  tabId: msg.tabId,
-  queue,
-  index: 0,
-  done: 0,
-  errors: 0,
-  consecutiveErrors: 0,
-  log: [],
-  startedAt: Date.now(),
-  stepDelay: msg.stepDelay || 1200,
-  throttleMs: msg.throttleMs || BASE_THROTTLE,
-  settleMs: msg.settleMs || 1500,
-  perWorkflowMs: msg.perWorkflowMs || PER_WORKFLOW_MS,
-  stallMs: msg.stallMs || STALL_MS,
-  batchSize: msg.batchSize || DEFAULT_BATCH,
-  lastProgressAt: Date.now(),
-  finishedAt: null
-});
+const newRun = (msg, queue, platform, direct) => {
+  const pacing = platform.bulk || PLATFORMS.pabbly.bulk;
+  const throttle = msg.throttleMs || pacing.throttleMs;
+  return {
+    active: true,
+    paused: false,
+    pauseReason: null,
+    runId: `run_${Date.now()}`,
+    platform: platform.id,
+    direct: !!direct,
+    tabId: msg.tabId,
+    queue,
+    index: 0,
+    done: 0,
+    errors: 0,
+    consecutiveErrors: 0,
+    log: [],
+    startedAt: Date.now(),
+    stepDelay: msg.stepDelay || pacing.stepDelay,
+    throttleMs: throttle,
+    baseThrottleMs: throttle,
+    settleMs: msg.settleMs || pacing.settleMs,
+    perWorkflowMs: msg.perWorkflowMs || pacing.perWorkflowMs,
+    stallMs: msg.stallMs || STALL_MS,
+    batchSize: msg.batchSize || pacing.batchSize || DEFAULT_BATCH,
+    lastProgressAt: Date.now(),
+    finishedAt: null
+  };
+};
 
 const startRun = async (state, sendResponse) => {
   await setState(state);
   try {
     chrome.alarms.create("bulkWatch", { periodInMinutes: 1 });
   } catch (_) {}
-  navigateTo(state.tabId, state.queue[0].id);
-  sendResponse({ started: true, total: state.queue.length });
+  sendResponse({ started: true, total: state.queue.length, direct: state.direct });
+  if (state.direct) processCurrent();
+  else navigateTo(state.tabId, state.queue[0].id, platformOf(state));
+};
+
+// Asks the page whether it can read every item in place. Only platforms that advertise the
+// capability are asked; anything else (or a "no") keeps the navigate-and-parse crawler.
+const resolveDirect = async (msg, platform) => {
+  if (!platform.directCapture) return false;
+  const prep = await sendWhenReady(msg.tabId, { type: "prepareBulk" }, 10, 500);
+  if (prep && prep.direct) return true;
+  if (prep && prep.reason) notify({ type: "bulkNote", message: prep.reason });
+  return false;
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -235,17 +324,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "startBulk") {
+    const platform = platformById(msg.platform) || PLATFORMS.pabbly;
     clearResults()
       .catch(() => {})
-      .then(() => startRun(newRun(msg, msg.workflows), sendResponse));
+      .then(() => resolveDirect(msg, platform))
+      .then((direct) => startRun(newRun(msg, msg.workflows, platform, direct), sendResponse));
     return true;
   }
 
   if (msg.type === "retryFailed") {
-    getFailedResults().then((failed) => {
-      if (!failed.length) return sendResponse({ started: false, reason: "no failed workflows" });
-      const queue = failed.map((f) => ({ id: f.id, name: f.name }));
-      startRun(newRun(msg, queue), sendResponse);
+    const platform = platformById(msg.platform) || PLATFORMS.pabbly;
+    getFailedResults(platform.id).then(async (failed) => {
+      if (!failed.length) return sendResponse({ started: false, reason: "no failed items" });
+      const queue = failed.map((f) => ({ id: f.nativeId != null ? f.nativeId : f.id, name: f.name }));
+      const direct = await resolveDirect(msg, platform);
+      startRun(newRun(msg, queue, platform, direct), sendResponse);
     });
     return true;
   }
@@ -263,8 +356,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           chrome.alarms.create("bulkWatch", { periodInMinutes: 1 });
         } catch (_) {}
-        if (state.index < state.queue.length) navigateTo(state.tabId, state.queue[state.index].id);
         sendResponse({ resumed: true, index: state.index, total: state.queue.length });
+        if (state.index >= state.queue.length) return;
+        if (state.direct) processCurrent();
+        else navigateTo(state.tabId, state.queue[state.index].id, platformOf(state));
       });
     });
     return true;
@@ -309,12 +404,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-chrome.tabs.onUpdated.addListener((tabId, info) => {
+// The toolbar button carries the detected platform's colours and name, so the extension identifies
+// the site before the panel is even open.
+const applyTabBranding = async (tabId, url) => {
+  const p = detectPlatform(url) || NEUTRAL;
+  try {
+    await chrome.action.setIcon({ tabId, path: p.icons });
+  } catch (_) {}
+  try {
+    await chrome.action.setTitle({
+      tabId,
+      title: p.id ? `${p.label} — Code Extractor` : "Automation Code Extractor (opens side panel)"
+    });
+  } catch (_) {}
+};
+
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status === "loading" || info.url) applyTabBranding(tabId, (tab && tab.url) || info.url);
   if (info.status !== "complete") return;
+  applyTabBranding(tabId, tab && tab.url);
   getState().then((state) => {
     if (!state || !state.active || state.paused || state.tabId !== tabId) return;
+    // An in-place run drives its own loop; a stray page load must not start a second one.
+    if (state.direct) return;
     processCurrent();
   });
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    applyTabBranding(tabId, tab && tab.url);
+  } catch (_) {}
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

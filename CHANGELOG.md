@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-07-27
+
+### Fixed
+- Zapier steps exported their raw internal identifier as the app name (`EmailParserCLIAPI@1.1.2` rather than `Email Parser by Zapier`). Nodes repeat that identifier in an `app` field, which short-circuited the humanizer before it ran; a value shaped like an API id is now normalized rather than taken at face value.
+- Apps built on Zapier's CLI platform identify their action by UUID, so `event` exported an opaque id where the editor shows a name. The step's title now wins over an id, and `title` is carried through to the export — previously the adapter captured it and the normalizer dropped it.
+- Zapier steps re-encoded every parameter into `text` as escaped JSON, roughly doubling each export and duplicating the code body of a Code step. Zapier's `mappings` already are the params, so `text` is now a short summary; the full dump is kept only when nothing reached `mappings` and it is the sole record of the step's config.
+
+### Changed
+- Version bumped so the content-script handshake catches a stale page. 0.11.0's Zapier fixes shipped without a version change, so a page still running the pre-fix script passed the check silently and kept producing the old output.
+
+## [0.11.0] - 2026-07-27
+
+### Added
+- **Zapier support.** The extension now captures Zapier Zaps as well as Pabbly Connect workflows, normalizing both into the same export schema so anything downstream only has to understand one shape. Paths by Zapier become `router` steps with one route per Path, Filter conditions become the usual OR-of-AND groups, and Code by Zapier steps carry their source in `mappings`.
+- Zapier extraction learns its own endpoint instead of hard-coding one: it finds the response carrying the Zap's node graph among the requests the editor already made for itself, turns that URL into a template, and caches it. Every remaining Zap is then read in place with the session cookie — no tab navigation, so a whole account takes seconds rather than the minutes-per-item that Pabbly's click-and-scrape requires. It falls back to the server-rendered `__NEXT_DATA__`, then to candidate endpoints, then to navigate-and-parse.
+- Zapier's `{{nodeId__field}}` tokens are resolved from internal node ids to step positions, so `references[]` means the same thing on both platforms.
+- Platform-aware theming: the side panel reskins completely on a Zapier tab — Zapier's own cream palette and `#ff4a00` brand orange, against the existing dark blue for Pabbly. The header names the detected platform, the toolbar icon and tooltip swap per tab, and the UI's nouns follow suit ("Export ALL Zaps" vs "Export ALL workflows").
+- **Diagnostics** button: dumps the captured URLs, the learned API endpoint, selector counts and the content-script version, and copies it to the clipboard. This is the first thing to reach for when a capture comes back empty.
+- Steps carry the `title` shown in the editor ("Run Javascript", "New Email") when it differs from the app name. For apps built on Zapier's CLI platform this is often the only human-readable label, since their `action` is an opaque UUID.
+- Golden-fixture tests for the Zapier adapter — node-graph parsing, Paths, filter groups, reference resolution, inventory detection, endpoint learning and app naming — bringing the suite to 41 assertions.
+
+### Changed
+- Renamed to **Automation Code Extractor**, since it is no longer Pabbly-only. The panel header shows whichever platform the tab is on.
+- Platform-specific page logic moved into `src/platforms/`, leaving `src/content.js` as a shared shell that bridges captures and routes messages. Each site loads only its own adapter.
+- System prompts are now per-platform: a Zapier export explains node ids, Paths and Zapier's parameter-key conventions rather than Pabbly's `N. Label : sample` references. Exports carry a `platform` field.
+- Bulk results are namespaced by platform in IndexedDB (schema v2, with an upgrade that re-keys existing Pabbly rows), so the two accounts' captures cannot collide and the panel shows only the current platform's results.
+- The network interceptor now matches on the current site rather than a hard-coded Pabbly domain, and records request bodies for POSTs so responses from a single shared endpoint can still be told apart.
+- Bulk pacing is per-platform: Pabbly keeps its cautious 1.5s throttle and 50-item batches, Zapier runs far tighter because it is not driving a browser.
+
+### Fixed
+- Router/filter detection no longer relies on the app name containing "router" or "filter", which silently missed every Zapier branch and condition step. Adapters state a step's role outright, and health scoring, type classification and the app report all honour it.
+- Status colours (the green/amber/red used by health pills, warnings and the error log) are themeable rather than hard-coded, so they stay legible on Zapier's light background instead of washing out.
+
+### Security
+- Zapier exports embed live credentials the same way Pabbly's do — connected-account details, API keys and webhook URLs. Treat generated files as secrets: keep them out of version control and rotate anything that has been shared.
+
 ## [0.10.0] - 2026-07-02
 
 ### Added

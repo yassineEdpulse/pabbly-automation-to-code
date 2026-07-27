@@ -1,5 +1,16 @@
-const isRouterApp = (app, step) => /router/i.test(app || "") || !!(step && (step.routes || step.isRouter));
-const isFilterApp = (app) => /filter/i.test(app || "");
+// Zapier's branch and condition steps are called "Paths by Zapier" and "Filter by Zapier", so
+// matching on the word "router" alone misses them. An adapter that already knows a step's role
+// states it in `type`, and that is then authoritative — name matching is only for steps that
+// arrive untyped (Pabbly's), where it would otherwise misread an app merely called "…Filter…".
+const isRouterApp = (app, step) => {
+  if (step && step.type) return step.type === "router" || !!step.routes;
+  return /router|paths?\s+by\s+zapier/i.test(app || "") || !!(step && (step.routes || step.isRouter));
+};
+
+const isFilterApp = (app, step) => {
+  if (step && step.type) return step.type === "filter";
+  return /filter|only\s+continue/i.test(app || "");
+};
 const hasFields = (s) => !!(s.mappings && s.mappings.length);
 
 const label = (s, i) => `step ${s.indexLabel || s.order || i + 1}${s.app ? ` (${s.app})` : ""}`;
@@ -25,7 +36,7 @@ const walk = (steps, warnings, counts, where) => {
         }
         walk(r.steps, warnings, counts, rAt);
       });
-      if (s.isRouter && !routes.length && s.note) {
+      if ((s.isRouter || s.depthCapped) && !routes.length && (s.note || s.depthCapped)) {
         warnings.push({ code: "router-depth-capped", message: `${at} hit the recursion depth limit` });
       }
       if (hasFields(s)) counts.withData += 1;
@@ -33,7 +44,7 @@ const walk = (steps, warnings, counts, where) => {
       return;
     }
 
-    if (isFilterApp(s.app)) {
+    if (isFilterApp(s.app, s)) {
       const groups = s.filter || [];
       const conditions = groups.reduce((n, g) => n + ((g.conditions && g.conditions.length) || 0), 0);
       if (!conditions) {

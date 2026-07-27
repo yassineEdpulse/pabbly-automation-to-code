@@ -1,0 +1,80 @@
+{
+  "meta": { "limit": 250, "offset": 0 },
+  "objects": [
+    {
+      "id": 1001,
+      "parent_id": null,
+      "root_id": 1001,
+      "type": "read",
+      "selected_api": "WebhookAppAPI@1.0.0",
+      "app": "WebhookAppAPI@1.0.0",
+      "action": "catch_hook",
+      "title": "Catch Hook",
+      "params": { "silent_mode": "false" }
+    },
+    {
+      "id": 1002,
+      "parent_id": 1001,
+      "root_id": 1001,
+      "type": "filter",
+      "selected_api": "FilterAPI@1.0.0",
+      "action": "filter",
+      "params": {
+        "filters": [
+          [{ "key": "1001__status", "op": "exact", "val": "paid" }],
+          [{ "key": "1001__amount", "op": "gt", "val": "100" }]
+        ]
+      }
+    },
+    {
+      "id": 1003,
+      "parent_id": 1002,
+      "root_id": 1001,
+      "type": "paths",
+      "selected_api": "PathsAPI@1.0.0",
+      "title": "Route by region",
+      "params": {}
+    },
+    {
+      "id": 1004,
+      "parent_id": 1003,
+      "root_id": 1001,
+      "type": "path",
+      "title": "Quebec",
+      "params": { "filters": [[{ "key": "1001__region", "op": "exact", "val": "QC" }]] }
+    },
+    {
+      "id": 1005,
+      "parent_id": 1004,
+      "root_id": 1001,
+      "type": "write",
+      "selected_api": "GmailAPI@2.0.0",
+      "action": "send_email",
+      "params": {
+        "to": "{{1001__email}}",
+        "subject": "Bonjour",
+        "body__html": "<p>Merci</p>",
+        "_zap_internal_noise": "should be dropped"
+      }
+    },
+    {
+      "id": 1006,
+      "parent_id": 1003,
+      "root_id": 1001,
+      "type": "path",
+      "title": "Ontario",
+      "params": { "filters": [[{ "key": "1001__region", "op": "exact", "val": "ON" }]] }
+    },
+    {
+      "id": 1007,
+      "parent_id": 1006,
+      "root_id": 1001,
+      "type": "code",
+      "selected_api": "CodeCLIAPI@1.0.1",
+      "app": "CodeCLIAPI@1.0.1",
+      "action": "01929fad-d3dd-62c2-52ed-7868d5fcc691",
+      "title": "Run Javascript",
+      "params": { "code": "return { ok: true };" }
+    }
+  ]
+}
