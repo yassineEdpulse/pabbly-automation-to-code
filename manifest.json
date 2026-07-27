@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Automation Code Extractor",
-  "version": "0.11.4",
+  "version": "0.11.6",
   "description": "Captures Pabbly Connect workflows and Zapier Zaps (network JSON + DOM) and exports a clean schema ready to hand to Claude for code conversion.",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms", "sidePanel"],
   "host_permissions": [

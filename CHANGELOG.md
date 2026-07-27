@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.6] - 2026-07-27
+
+### Changed
+- **Line-item flattening is now explained.** A field path containing `[]` was documented as "an array element", which reads as *one* element. Zapier actually flattens every value at that path into a single string, so a condition on `events[]subject__extra_attrs[]value` tests the whole array at once — `contains` passes if ANY element matches, and a `negated` `contains` passes only if NO element matches. A model reading the old wording could reimplement a filter as its own near-opposite. The prompt now states the flattening rule, tells the model to test the whole set, and warns that such a condition cannot reveal WHICH field matched — so if the automation is really keyed to one specific field, the export cannot prove it and the model should ask.
+- **Opaque ids are called out.** Values for fields like `list`, `brand`, or `folder` export as Zapier's internal ids (`VSOspVs8TEPDetdPK4A2WQ`, `2`). The editor shows a human name next to them, but it resolves that name separately and it is not in the node graph, so the export cannot carry it. The prompt now tells the model to keep the id as a named constant and ask the user what it is called, rather than invent a name or leave a bare id inline.
+- The Zapier prompt now states outright that the node graph carries no sample/test values, so nothing in the export shows what a field holds at runtime. The Pabbly export embeds samples in its references, and the absence of an equivalent here was previously left to inference.
+
+## [0.11.5] - 2026-07-27
+
+### Changed
+- Negated filter conditions are now explicit. Zapier has no negative operators — the editor's "does not contain" is stored as the *positive* operator plus a stop flag, so exporting the pair verbatim read as its own opposite. Such conditions now carry `negated: true`, and the system prompt tells the model to invert the operator when it sees one. Replaces the `action: "stop"` field, whose name also collided with a step's `action`.
+
 ## [0.11.4] - 2026-07-27
 
 ### Fixed

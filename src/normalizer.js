@@ -1,7 +1,7 @@
 import { analyzeSteps } from "./health.js";
 
 export const SCHEMA_VERSION = 2;
-export const EXTENSION_VERSION = "0.11.4";
+export const EXTENSION_VERSION = "0.11.6";
 export const EXTENSION_NAME = "Automation Code Extractor";
 
 const idOf = (platform) => (platform && platform.id) || null;
@@ -174,16 +174,33 @@ export const ZAPIER_SYSTEM_PROMPT =
   "The extension has already resolved those ids to step positions: a mapping containing references carries " +
   "a `references` array of `{ step, field }` where `step` matches another step's `order`. When generating " +
   "code, treat the value as a reference to that step's output (e.g. `step3.email`), and never hard-code the " +
-  "literal `{{...}}` token. Tokens the extension could not resolve are left verbatim in the value.\n" +
+  "literal `{{...}}` token. Tokens the extension could not resolve are left verbatim in the value. The node " +
+  "graph carries no sample/test values, so this export never shows what a field holds at runtime — do not " +
+  "infer a field's shape, type, or cardinality from the export alone.\n" +
   "- Field names in `mappings` are Zapier's internal parameter keys (e.g. `to`, `subject`, `body__html`), " +
   "not the labels shown in the editor. A double underscore denotes nesting: `body__html` = `body.html`, " +
-  "and `[]` denotes an array element: `events[]subject__status` = `events[].subject.status`.\n" +
+  "and `[]` marks a step INTO AN ARRAY: `events[]subject__status` = `events[].subject.status`.\n" +
+  "- LINE-ITEM FLATTENING: a path containing `[]` does NOT select one element. Zapier flattens every value " +
+  "at that path into a single string, so a condition on `events[]subject__extra_attrs[]value` tests the " +
+  "whole `extra_attrs` array at once: a `contains` passes when ANY element matches, and a `contains` " +
+  "carrying `negated: true` passes only when NO element matches. Reimplement it that way — collect all the " +
+  "values and test the set — never by reading the first element. Such a condition also cannot tell you " +
+  "WHICH field matched, so if the automation is really keying off one specific field, the export cannot " +
+  "prove it: ask rather than guess.\n" +
+  "- OPAQUE IDS: values for fields such as `list`, `brand`, `folder`, or `spreadsheet` are Zapier's internal " +
+  "ids (`VSOspVs8TEPDetdPK4A2WQ`, `2`). The editor shows a human name beside them, but that name is resolved " +
+  "separately by the editor and is NOT in this export. Carry the id through as a NAMED CONSTANT and ask the " +
+  "user what each one is called — never invent a name, and never leave a bare id inline where the generated " +
+  "code would be unreadable to the next person.\n" +
   "- FILTER CONDITIONS address their source the same way, as a bare `<nodeId>__<path>` key. Those are " +
   "resolved too: a condition carrying a `step` is reading that step's output at `field`, so " +
   "`{ step: 1, field: \"events[]subject__status\", operator: \"icontains\", value: \"live\" }` means \"step 1's " +
   "events[].subject.status contains 'live'\". `operator` is Zapier's own comparison key (`exact`, " +
-  "`icontains`, `iexist`, `not_in`, …). A condition marked `action: \"stop\"` ENDS the Zap when it " +
-  "matches — it is an exclusion, the inverse of the others, which gate the Zap by passing.\n" +
+  "`icontains`, `iexist`, `in`, …). NEGATION: Zapier has no negative operators — the editor's \"does " +
+  "not contain\" is stored as the POSITIVE operator with a stop flag, which the extension surfaces as " +
+  "`negated: true`. So `{ operator: \"icontains\", negated: true, value: \"Autre institution\" }` means " +
+  "\"does NOT contain 'Autre institution'\", and the automation continues only while that holds. " +
+  "Always invert an operator carrying `negated: true`.\n" +
   "- A `Code by Zapier` step holds its JavaScript or Python in `mappings` under a `code` key. Reimplement " +
   "that logic rather than trying to run it as-is.\n" +
   "- `Paths by Zapier` becomes a `router` step. Each entry in `routes[]` is one Path, and that Path's own " +

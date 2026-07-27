@@ -9,7 +9,7 @@
 // runs first creates it.
 (() => {
   const TAG = "PCE_CAPTURE";
-  const CONTENT_VERSION = "0.11.4";
+  const CONTENT_VERSION = "0.11.5";
 
   const localCaptures = (globalThis.__PCE_CAPTURES = globalThis.__PCE_CAPTURES || []);
   let lastResult = null;

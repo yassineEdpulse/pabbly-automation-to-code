@@ -425,8 +425,9 @@
       field: field == null ? null : String(field),
       operator: operator == null ? null : String(operator),
       value: value == null ? null : flatValue(value),
-      // "stop" rows end the Zap when they match, rather than gating it — the inverse of "continue".
-      ...(c.action && String(c.action) !== "continue" ? { action: String(c.action) } : {})
+      // Zapier has no negative operators. The editor's "does not contain" is stored as the POSITIVE
+      // operator plus action:"stop", so exporting the pair verbatim reads as its own opposite.
+      ...(c.action && String(c.action) !== "continue" ? { negated: true } : {})
     };
   };
 

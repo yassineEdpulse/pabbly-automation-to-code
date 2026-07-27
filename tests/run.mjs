@@ -467,12 +467,12 @@ console.log("\nZapier — node graph → canonical steps");
     eq(real[1].filter[1].conditions.length, 2, "second group size");
   });
 
-  check("reads match as the operator and flags stop rows", () => {
+  check("reads match as the operator and marks negated rows", () => {
     const c = real[1].filter[0].conditions[0];
     eq(c.operator, "icontains", "operator from `match`");
     eq(c.value, "live", "value");
-    eq(c.action, undefined, "continue rows carry no action");
-    eq(real[1].filter[1].conditions[1].action, "stop", "stop row flagged");
+    eq(c.negated, undefined, "positive rows carry no negation flag");
+    eq(real[1].filter[1].conditions[1].negated, true, "negated row flagged");
   });
 
   check("resolves a bare nodeId__path filter key to a step reference", () => {
