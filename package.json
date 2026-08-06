@@ -1,12 +1,12 @@
 {
   "name": "automation-code-extractor",
-  "version": "0.11.6",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "description": "Chrome/Edge MV3 extension that captures Pabbly Connect workflows and Zapier Zaps and exports a clean schema for AI code conversion.",
   "scripts": {
     "test": "node tests/run.mjs",
-    "check": "node -e \"['src/background.js','src/content.js','src/interceptor.js','src/normalizer.js','src/popup.js','src/db.js','src/health.js','src/zip.js','src/platforms/registry.js','src/platforms/pabbly-content.js','src/platforms/zapier-content.js'].forEach(f=>require('child_process').execSync('node --check '+f,{stdio:'inherit'}))\""
+    "check": "node -e \"const{readdirSync,statSync}=require('fs'),{join}=require('path'),{execSync}=require('child_process'),walk=d=>readdirSync(d).flatMap(f=>{const p=join(d,f);return statSync(p).isDirectory()?walk(p):p.endsWith('.js')?[p]:[]});const fs=walk('src');const bad=[];for(const f of fs){try{execSync('node --check '+f,{stdio:['ignore','ignore','pipe']})}catch(e){const L=String(e.stderr).split('\\n').filter(Boolean);bad.push(f+' -> '+(L[0]||'?')+' :: '+(L.find(l=>/Error/.test(l))||'unknown'))}}if(bad.length){console.error('SYNTAX CHECK FAILED ('+bad.length+'/'+fs.length+')');bad.forEach(b=>console.error('  '+b));process.exit(1)}console.log('syntax check OK — '+fs.length+' files')\""
   },
   "devDependencies": {
     "linkedom": "^0.18.5"

@@ -1,0 +1,131 @@
+<!--
+  An "API (Pabbly) : Execute API Request" step, trimmed from a real capture of step 6
+  "Get Client info from TC". Structure preserved exactly where the scanner keys off it:
+
+  - The endpoint URL lives in a HIDDEN textarea.map_data_value.curr_api_url whose content is HTML:
+    plain URL text followed by a <span class="dynamic_value" data-attr="…"> chip. TinyMCE renders it
+    (.tox-tinymce plus an iframe id="<textarea-id>_ifr"), which is why the textarea is display:none.
+  - The two <select> mapping dropdowns are kept (heavily thinned) because their <option> text
+    contains full URLs. They are the false-positive trap: a scan that reads step HTML rather than
+    named field elements reports hits inside them, and an apply pass would corrupt the mapping list.
+  - .api_response_con holds the captured test response, not configuration, and must never be written.
+
+  The URL here is the BEFORE state (secure.tutorcruncher.com). The live capture this came from had
+  already been changed to app.tutorcruncher.com by hand.
+-->
+<div data_curr_api_index="IjU3NjAwNTZiMDYzNDA0MzI1MjY5NTUzNzUxMzMi_pc" class="webhook_api_mapping_div">
+
+  <select id="select_map_data_value_dropdown" class="select_map_data_value_dropdown" hidden="">
+    <option selected="" value="deafult_map_data_value" disabled=""></option>
+    <optgroup data-content="1. Webhook by Pabbly: Catch Webhook (Preferred)">
+      <option value="0&lt;=-+*/@/*+-=&gt;Permalink">1. Permalink : https://secure.tutorcruncher.com/api/legacy/?x=1</option>
+      <option value="0&lt;=-+*/@/*+-=&gt;email_parent">1. Email Parent : filip_par@tutorax.com</option>
+    </optgroup>
+    <optgroup data-content="5. Replace the + in the email if it exists">
+      <option value="4922054&lt;=-+*/@/*+-=&gt;result">5. Result : filip_par@tutorax.com</option>
+    </optgroup>
+  </select>
+
+  <div class="card m-b-0">
+    <div onclick="toggle_webhook_api_mapping_div_fun(this, true)" class="card-header p-20">
+      <div class="app_img_con"><img src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1750921465-1717652425-API--Pabbly-.svg" alt="App Logo"></div>
+      <span class="text-secondary font-14">Action : Do this …</span>
+      <h3 class="curr_app_name text-bodycolor m-b-0"><span class="gbl_module_index">6.</span> Get Client info from TC</h3>
+    </div>
+
+    <div style="" class="card-body">
+      <div class="form-row">
+        <div class="form-group col-md-12">
+          <label>Choose App</label>
+          <div class="choose_app_ele_con " onclick="show_choose_app_option(this,'action')">
+            <img src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1750921465-1717652425-API--Pabbly-.svg" class="choose_app_img_ele" alt="app_img">
+            <span class="choose_app_name_ele">API (Pabbly)</span>
+          </div>
+        </div>
+
+        <div class="form-group-choose_app_method form-group col-md-12">
+          <label>Action Event</label>
+          <select onchange="change_choose_app_method(this)" class="choose_app_method selectpicker form-control" name="api_method">
+            <option selected="" value="IjU3NjEi_pc">Execute API Request</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mapping_apps_method_data m-t-20">
+        <input class="curr_app_auth_data_id" type="hidden" disabled="" value="IjU3NjUi_pc">
+
+        <div class="api_app_action_event_con form-group col-md-12 p-r-5 p-l-5">
+          <label>Action Event Method</label>
+          <select onchange="api_method_change(this,'')" class="selectpicker form-control" name="api_method">
+            <option value="get" selected="">GET</option>
+            <option value="post">POST</option>
+          </select>
+        </div>
+
+        <div class="api_app_action_endpoint_url form-group col-md-12 p-r-5 p-l-5">
+          <label>API Endpoint URL
+            <span class="font-12 text-danger"> (Required)</span>
+          </label>
+          <div class="form-group col-md-12 p-0 m-b-0 d-block">
+            <textarea rows="1" class="form-control map_data_value curr_api_url" placeholder="Enter text or map data." id="textarea-1027297472178593172920555399021185119037" name="map_data_value" style="display: none;" aria-hidden="true">https://secure.tutorcruncher.com/api/clients/?user__email=&lt;span class="dynamic_value" contenteditable="false" data-attr="4922054&lt;=-+*/@/*+-=&gt;result"&gt;5. Result : filip_par@tutorax.com&lt;!--endofdynamic_value--&gt;&lt;/span&gt;</textarea>
+            <div role="application" class="tox tox-tinymce" aria-disabled="false">
+              <div class="tox-editor-container">
+                <div class="tox-sidebar-wrap">
+                  <div class="tox-edit-area">
+                    <iframe id="textarea-1027297472178593172920555399021185119037_ifr" frameborder="0" title="Rich Text Area" class="tox-edit-area__iframe"></iframe>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <select onchange="add_extra_option_map_data_value(this)" class="select_map_data_value select_extra_map_data_value selectpicker form-control" id="select-1027297472178593172920555399021185119037">
+              <option class="bs-title-option" value=""></option>
+              <option selected="" value="deafult_map_data_value" disabled=""></option>
+              <optgroup data-content="1. Webhook by Pabbly: Catch Webhook (Preferred)">
+                <option value="0&lt;=-+*/@/*+-=&gt;Permalink">1. Permalink : https://secure.tutorcruncher.com/api/legacy/?x=1</option>
+              </optgroup>
+            </select>
+          </div>
+          <small class="text-secondary font-14 d-block m-t-5 ">Enter the API endpoint URL for the API request.</small>
+        </div>
+
+        <div class="form-group api_header_con col-md-12">
+          <label>Headers</label>
+          <div class="api_header_div">
+            <div class="header_data">
+              <input class="curr_header_key" value="Referer">
+              <input class="curr_header_value" value="https://secure.tutorcruncher.com/">
+            </div>
+            <div class="header_data">
+              <input class="curr_header_key" value="Content-Type">
+              <input class="curr_header_value" value="application/json">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group api_mapping_con">
+          <div class="api_mapping_curr_params_con">
+            <label class="map_data_label">callback_url</label>
+            <input class="map_data_key" value="callback_url">
+            <textarea class="map_data_value" id="textarea-param-1">https://secure.tutorcruncher.com/api/hooks/?id=&lt;span class="dynamic_value" contenteditable="false" data-attr="0&lt;=-+*/@/*+-=&gt;id"&gt;1. Id : 58170&lt;!--endofdynamic_value--&gt;&lt;/span&gt;</textarea>
+          </div>
+          <div class="api_mapping_curr_params_con">
+            <label class="map_data_label">note</label>
+            <input class="map_data_key" value="note">
+            <textarea class="map_data_value" id="textarea-param-2">nothing to rewrite here</textarea>
+          </div>
+        </div>
+
+        <div class="form-group api_response_con">
+          <label>Response Received</label>
+          <textarea class="map_data_value">{"url":"https://secure.tutorcruncher.com/api/clients/1","status":200}</textarea>
+        </div>
+      </div>
+
+      <div class="action_btn_con">
+        <button type="submit" onclick="save_only_curr_api_data(this)" class="save_curr_step btn btn-outline-primary m-l-10 font-15 mb-2 mb-sm-0" data-toggle="tooltip" data-placement="top" data-original-title="Save the values you have entered.">
+          <span class="spinner-clicked spinner-border spinner-border-sm spinner-vertical-align m-r-5 d-none" role="status" aria-hidden="true"></span>Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

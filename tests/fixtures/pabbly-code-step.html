@@ -1,0 +1,127 @@
+<!--
+  A "Code (Pabbly) : Run JavaScript" step, trimmed from a real capture of step 2 "Get Contractor
+  Data". The important discovery this fixture pins down: a code body is stored the SAME way as any
+  other mapping value — a hidden textarea.map_data_value backed by TinyMCE — not in a code editor
+  with its own model. So there is one write path for the whole extension, not two.
+
+  Inside that value the code is HTML: newlines are <br>, blank lines are
+  <span class="pabbly-connect-linebreak">, and mapped values are <span class="dynamic_value"> chips.
+  The distinguishing attribute is data-enable_code_render="1".
+
+  Traps this fixture deliberately keeps:
+  - input.curr_api_url (hidden, value="method_url") — a code step has one, so a bare .curr_api_url
+    selector picks up a non-field. The endpoint rule must require textarea.curr_api_url.
+  - The mapping <select> carries "1. Events 0 Subject Url : https://secure.tutorcruncher.com/…",
+    the exact string being searched for. Scanning step HTML rather than named fields reports it.
+  - .api_response_con holds readonly response-preview textareas that must never be written.
+
+  Secrets in the original capture (x-api-key, API_TOKEN) are replaced with placeholders here.
+-->
+<div data_curr_api_index="IjU3NjMwNTZmMDYzMzA0MzM1MjY1NTUzMDUxMzIi_pc" class="webhook_api_mapping_div">
+
+  <select id="select_map_data_value_dropdown" class="select_map_data_value_dropdown" hidden="">
+    <option selected="" value="deafult_map_data_value" disabled=""></option>
+    <optgroup data-content="1. Webhook by Pabbly: Catch Webhook (Preferred)">
+      <option value="0&lt;=-+*/@/*+-=&gt;events&lt;=-+($@$)+-=&gt;0&lt;=-+($@$)+-=&gt;subject&lt;=-+($@$)+-=&gt;url">1. Events 0 Subject Url : https://secure.tutorcruncher.com/api/contractors/2438639/</option>
+      <option value="0&lt;=-+*/@/*+-=&gt;events&lt;=-+($@$)+-=&gt;0&lt;=-+($@$)+-=&gt;subject&lt;=-+($@$)+-=&gt;id">1. Events 0 Subject Id : 2438639</option>
+    </optgroup>
+  </select>
+
+  <div class="card m-b-0">
+    <div onclick="toggle_webhook_api_mapping_div_fun(this, true)" class="card-header p-20">
+      <div class="app_img_con"><img src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1750922277-Code--Pabbly.svg" alt="App Logo"></div>
+      <span class="text-secondary font-14">Action : Do this …</span>
+      <h3 class="curr_app_name text-bodycolor m-b-0"><span class="gbl_module_index">2.</span> Get Contractor Data</h3>
+    </div>
+
+    <div style="" class="card-body">
+      <div class="form-row">
+        <div class="form-group col-md-12">
+          <label>Choose App</label>
+          <div class="choose_app_ele_con " onclick="show_choose_app_option(this,'action')">
+            <img src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1750922277-Code--Pabbly.svg" class="choose_app_img_ele" alt="app_img">
+            <span class="choose_app_name_ele">Code (Pabbly)</span>
+          </div>
+        </div>
+        <div class="form-group-choose_app_method form-group col-md-12">
+          <label>Action Event</label>
+          <select onchange="change_choose_app_method(this)" class="choose_app_method selectpicker form-control" name="api_method">
+            <option selected="" value="IjU3NjUwNTZiMDYzNzA0MzM1MjZjIg_3D_3D_pc">Run JavaScript</option>
+            <option value="IjU3NjUwNTZiMDYzNzA0MzM1MjZkIg_3D_3D_pc">Run Python</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mapping_apps_method_data m-t-20">
+        <input class="curr_app_auth_data_id" type="hidden" disabled="" value="IjU3NjUi_pc">
+        <input type="hidden" disabled="" class="curr_api_url" value="method_url">
+        <input type="hidden" disabled="" name="api_method">
+
+        <div class="api_header_con form-group col-md-12 m-b-5 p-l-5" style="display:none">
+          <div class="api_header_div m-t-5">
+            <div class="header_data row align-center">
+              <div class="form-group col-md-4 p-r-5 m-t-5 m-b-5">
+                <input type="text" class="curr_header_key form-control" placeholder="key" value="x-api-key">
+              </div>
+              <div class="form-group col-md-7 m-t-5 m-b-5">
+                <input type="text" class="curr_header_value form-control" placeholder="value" value="REDACTED_API_KEY">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="api_mapping_con form-group col-md-12 m-b-10 p-l-5 col-12">
+          <div class="api_mapping_div m-t-5">
+            <div class="api_mapping_curr_params_con row">
+              <input class="map_data_key" param_data_type="string" param_data_required="1" field_limit="250000" type="hidden" disabled="" value="code">
+              <div class="col-md-12 col-xl-12 col-lg-12 p-r-5">
+                <div class="row">
+                  <div class="col-md-7 col-6">
+                    <label class="map_data_label">JavaScript Code</label>
+                    <span class="font-12 text-danger"> (Required)</span>
+                  </div>
+                </div>
+              </div>
+              <div class="form-group col-md-12 p-r-0 m-b-2">
+                <div class="d-block">
+                  <textarea rows="1" class="form-control map_data_value" placeholder="Enter text or map data." data-disable_html_render="0" data-enable_code_render="1" data-br_for_enter="0" id="textarea-1785932666864364778606564867" name="map_data_value" style="display: none;" aria-hidden="true">const CONTRACTOR_ID = "&lt;span class="dynamic_value" contenteditable="false" data-attr="0&lt;=-+*/@/*+-=&gt;events&lt;=-+($@$)+-=&gt;0&lt;=-+($@$)+-=&gt;subject&lt;=-+($@$)+-=&gt;id"&gt;1. Events 0 Subject Id : 2438639&lt;!--endofdynamic_value--&gt;&lt;/span&gt;";&lt;br&gt;const API_TOKEN = "REDACTED_TOKEN";&lt;br&gt;const CONTRACTORS_API_URL = 'https://secure.tutorcruncher.com/api/contractors/';&lt;br&gt;&lt;br&gt;async function getContractorData() {&lt;br&gt;const response = await fetch(`${CONTRACTORS_API_URL}${CONTRACTOR_ID}/`, {&lt;br&gt;method: 'GET',&lt;br&gt;headers: {&lt;br&gt;'Authorization': `token ${API_TOKEN}`,&lt;br&gt;'Content-Type': 'application/json'&lt;br&gt;}&lt;br&gt;});&lt;br&gt;&lt;br&gt;const data = await response.json();&lt;br&gt;if (data.count &amp;lt; 1) return null;&lt;br&gt;return data;&lt;br&gt;}&lt;span class="pabbly-connect-linebreak" contenteditable="false"&gt;&lt;br/&gt;&lt;/span&gt;&lt;span class="pabbly-connect-linebreak" contenteditable="false"&gt;&lt;br/&gt;&lt;/span&gt;return await getContractorData();</textarea>
+                  <div role="application" class="tox tox-tinymce" aria-disabled="false">
+                    <div class="tox-editor-container">
+                      <div class="tox-sidebar-wrap">
+                        <div class="tox-edit-area">
+                          <iframe id="textarea-1785932666864364778606564867_ifr" frameborder="0" title="Rich Text Area" class="tox-edit-area__iframe"></iframe>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <select onchange="add_option_map_data_value(this)" class="select_map_data_value selectpicker form-control" id="select-1785932666864364778606564867">
+                    <option class="bs-title-option" value=""></option>
+                    <option value="0&lt;=-+*/@/*+-=&gt;events&lt;=-+($@$)+-=&gt;0&lt;=-+($@$)+-=&gt;subject&lt;=-+($@$)+-=&gt;url">1. Events 0 Subject Url : https://secure.tutorcruncher.com/api/contractors/2438639/</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="api_response_con form-group col-md-12 m-b-10 m-t-15 p-l-5 p-r-0" style="">
+          <label onclick="api_response_toggle(this)" class="api_response_label pointer">Response Received</label>
+          <div class="api_response_div" style="display:none;">
+            <div class="form-group col-6 p-r-10 p-r-md-15">
+              <input type="text" class="form-control" readonly="" value="Output Url">
+            </div>
+            <div class="form-group col-6 p-l-10 p-l-md-15">
+              <textarea name="Text1" class="form-control" readonly="" rows="1">https://secure.tutorcruncher.com/api/contractors/2438639/</textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="action_btn_con">
+        <button type="submit" onclick="save_only_curr_api_data(this)" class="save_curr_step btn btn-outline-primary m-l-10 font-15 mb-2 mb-sm-0" data-toggle="tooltip" data-placement="top" data-original-title="Save the values you have entered.">
+          <span class="spinner-clicked spinner-border spinner-border-sm spinner-vertical-align m-r-5 d-none" role="status" aria-hidden="true"></span>Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

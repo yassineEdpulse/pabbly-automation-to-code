@@ -9,7 +9,7 @@
 // runs first creates it.
 (() => {
   const TAG = "PCE_CAPTURE";
-  const CONTENT_VERSION = "0.11.5";
+  const CONTENT_VERSION = "0.13.0";
 
   const localCaptures = (globalThis.__PCE_CAPTURES = globalThis.__PCE_CAPTURES || []);
   let lastResult = null;
@@ -27,11 +27,20 @@
     } catch (_) {}
   };
 
+  // Capped for the same reason the service worker's copy is: a scan of an 80-step workflow pulls one
+  // large step-config payload per click, and an uncapped array holds every one of them for the life of
+  // the page. Only recent captures are ever read (parseCaptures matches them to steps just clicked), so
+  // dropping the oldest costs nothing.
+  const MAX_LOCAL_CAPTURES = 400;
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.__pceTag !== TAG) return;
     localCaptures.push(data.payload);
+    if (localCaptures.length > MAX_LOCAL_CAPTURES) {
+      localCaptures.splice(0, localCaptures.length - MAX_LOCAL_CAPTURES);
+    }
     try {
       chrome.runtime.sendMessage({ type: "capture", payload: data.payload });
     } catch (_) {}
@@ -126,6 +135,54 @@
         return true;
       }
       respond(a.captureById(msg.id, msg), sendResponse, "captureById");
+      return true;
+    }
+
+    // Scan (apply:false) and apply (apply:true) share one handler so the two passes can never drift
+    // apart in which steps or fields they consider.
+    if (msg.type === "rewriteWorkflow") {
+      if (!a.rewriteWorkflow) {
+        sendResponse({ error: "adapter has no rewrite pass" });
+        return true;
+      }
+      respond(a.rewriteWorkflow(msg), sendResponse, "rewriteWorkflow");
+      return true;
+    }
+
+    if (msg.type === "scrapeHistory") {
+      respond(Promise.resolve(a.scrapeHistory ? a.scrapeHistory() : null), sendResponse, "scrapeHistory");
+      return true;
+    }
+
+    if (msg.type === "fetchCatalogue") {
+      respond(
+        Promise.resolve(a.fetchCatalogue ? a.fetchCatalogue() : { workflows: [], errors: [{ error: "no api" }] }),
+        sendResponse,
+        "fetchCatalogue"
+      );
+      return true;
+    }
+
+    if (msg.type === "scrapeUsage") {
+      respond(Promise.resolve(a.scrapeUsage ? a.scrapeUsage() : null), sendResponse, "scrapeUsage");
+      return true;
+    }
+
+    if (msg.type === "advanceHistoryPage") {
+      respond(
+        Promise.resolve(a.advanceHistoryPage ? a.advanceHistoryPage(msg) : { advanced: false }),
+        sendResponse,
+        "advanceHistoryPage"
+      );
+      return true;
+    }
+
+    if (msg.type === "setHistoryPageSize") {
+      respond(
+        Promise.resolve(a.setHistoryPageSize ? a.setHistoryPageSize(msg) : { changed: false }),
+        sendResponse,
+        "setHistoryPageSize"
+      );
       return true;
     }
 

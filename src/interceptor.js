@@ -18,6 +18,12 @@
   const labels = location.hostname.split(".");
   const BASE = labels.slice(-2).join(".");
 
+  // Same-site is the right filter, but it is not sufficient: a site's analytics can live on its own
+  // subdomain. Pabbly's session recorder posts to posthog.pabbly.com, which passed the same-site test,
+  // so every beacon was recorded as if it were workflow data — filling the capture buffer with noise,
+  // burying the real endpoints in diagnostics, and growing without bound over a long bulk run.
+  const ANALYTICS = /^(posthog|analytics|telemetry|metrics|sentry|segment|heap|track|rum|logs?)\./i;
+
   const looksRelevant = (url) => {
     if (!url) return false;
     if (url.startsWith("/")) return true;
@@ -27,7 +33,10 @@
     } catch (_) {
       return false;
     }
-    return u.hostname === location.hostname || u.hostname === BASE || u.hostname.endsWith(`.${BASE}`);
+    const sameSite =
+      u.hostname === location.hostname || u.hostname === BASE || u.hostname.endsWith(`.${BASE}`);
+    if (!sameSite) return false;
+    return !ANALYTICS.test(u.hostname);
   };
 
   const parseMaybeJson = (text) => {

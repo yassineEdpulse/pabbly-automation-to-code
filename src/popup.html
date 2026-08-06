@@ -36,6 +36,35 @@
 
       <div id="inventory" class="inventory"></div>
 
+      <details id="fixer" class="fixer">
+        <summary>Find &amp; replace across workflows</summary>
+        <label class="fx-label" for="fxFind">Current value</label>
+        <input id="fxFind" class="search" type="text" spellcheck="false" autocomplete="off"
+               placeholder="secure.tutorcruncher.com" />
+        <label class="fx-label" for="fxReplace">Replace with</label>
+        <input id="fxReplace" class="search" type="text" spellcheck="false" autocomplete="off"
+               placeholder="app.tutorcruncher.com" />
+        <div class="row">
+          <button type="button" id="fxCollect">Collect workflows</button>
+        </div>
+        <label class="fx-check"><input type="checkbox" id="fxActiveOnly" /> Active workflows only</label>
+        <div id="fxQueueInfo" class="fx-ledger"></div>
+        <div class="row">
+          <button type="button" id="fxTestOne">Test rule on this workflow</button>
+          <button type="button" id="fxApplyOne" class="danger" disabled>Apply to this one</button>
+        </div>
+        <div class="row">
+          <button type="button" id="fxScan" class="primary">Scan (no changes)</button>
+          <button type="button" id="fxApply" class="danger" disabled>Apply &amp; Save</button>
+        </div>
+        <div id="fxLedger" class="fx-ledger"></div>
+        <div id="fxReport" class="fx-report"></div>
+        <div class="row">
+          <button type="button" id="fxExport" class="ghost">Export report</button>
+          <button type="button" id="fxReset" class="ghost">Reset ledger</button>
+        </div>
+      </details>
+
       <input id="search" class="search" type="search" placeholder="Search…" autocomplete="off" />
 
       <div id="filters" class="filters"></div>

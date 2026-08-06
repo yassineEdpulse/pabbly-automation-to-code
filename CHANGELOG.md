@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-06
+
+### Added
+- **Find & replace across Pabbly workflows.** Rewrites a value — the case it was built for is the TutorCruncher API host, `secure.tutorcruncher.com` → `app.tutorcruncher.com` — across every step of every queued workflow, then clicks each step's own Save. Scan-first by design: Apply stays disabled until a scan has produced a report to review, and every field is re-read after saving so a write that claims success without persisting is reported as unverified rather than counted as done. Covers API endpoint URLs, body parameters, request headers, filter values and Code (Pabbly) JavaScript/Python bodies, including steps nested inside Router routes.
+- **Whole-account catalogue in one request.** Pabbly Connect v2 is a React front end over a JSON API, and `/backend/api/workflows` returns the entire catalogue with ids, folders and active state — replacing 2,400 pages of run-log paging. Records are located by content rather than by field name, so a change to the response layout does not break it. Task-usage figures are merged in for the task counts that order the queue busiest-first, so an interrupted run has already done the workflows that matter most.
+- **Rewrite ledger.** Every visited workflow is recorded durably, including ones found clean — without that a pass never converges, because a workflow fixed today keeps reappearing in the run log from executions days earlier. Failures are deliberately left unsettled so they are retried; fixed and clean are skipped.
+- **Task History and Task Usage readers.** The v2 history tabs are a separate React app sharing no selectors with the jQuery editor, so the panel previously reported "no workflow list found" there. Both are now read and folded by workflow, and each reports its true coverage — a run-log page is a slice of tens of thousands of rows and must never read as an account inventory.
+- **Single-workflow test and apply.** Runs the rule against the workflow on screen with no queue and no navigation, so a rule can be proven — and a write proven to actually persist — in seconds instead of hours. Apply-to-one unlocks only after a test on that same workflow finds something.
+- **Page-realm bridges.** Field values live in TinyMCE-backed textareas, and the usage table holds workflow ids only in React props; both need the page's own JS realm, which an isolated content script cannot reach. The React reader verifies each id against its row's rendered name and refuses the whole batch on any mismatch, because an id attributed to the wrong row would mean editing the wrong automation.
+
+### Changed
+- Scan runs no longer pause every 50 workflows. A read-only pass has nothing to review mid-run, and the checkpoint meant a 430-workflow scan idled overnight waiting for a click. Apply runs still checkpoint — those are writing to a live account.
+- Rewrite passes carry their own pacing and timeouts, ordered so they cannot fight each other: a soft deadline returns partial results before the message timeout fires, and the watchdog is last, so it can no longer declare a stall on a workflow that is progressing normally.
+- Findings stream into the panel as they are discovered rather than appearing only on completion, so a rule that matches nothing is visible in minutes instead of hours.
+- The syntax check walks `src/` instead of a hand-maintained file list, and states its own verdict so a truncated log cannot hide a failure.
+- The panel verifies the content-script version on every read, not just before an action — a new panel talking to an old content script previously read as "nothing to list".
+
+### Fixed
+- **A scan could report a false all-clear.** Clicking a step header makes Pabbly replace the step's DOM node, so the element held across the click was detached and its stale subtree reported `offsetParent === null` forever. In one large workflow 48 of 49 steps were skipped as "never loaded" while visibly open on screen, the workflow was recorded as clean, and the ledger then excluded it from every later pass. Steps are re-acquired after the click via `data_curr_api_index`, a detached node is detected immediately instead of being polled for seconds, and any workflow with unread steps is marked for retry rather than clean.
+- **No write ever landed.** The staleness guard compared the scan's `textarea.value` against TinyMCE's own model, which is never byte-identical, so every field was rejected as "changed since scan" and nothing was written. The hidden textarea is the authoritative value and is what Pabbly serializes on save, so it is now both the thing compared and the thing verified.
+- A mapping chip's `data-attr` can contain a literal `>` (`0<=-+*/@/*+-=>email`), which a naive tag matcher read as the end of the tag — allowing a rewrite inside the attribute, which silently unbinds the mapping.
+- Task History's execution timestamp carried a timezone suffix that made `Date.parse` return `NaN`, silently defeating the most-recent-run comparison.
+- A cell whose aria-label is a tooltip rather than a `Label: value` pair returned the tooltip sentence as the Task History ID.
+- Step counts in the run log are per execution, not per workflow — routers and filters change how much of a workflow runs — so the largest run is kept rather than the first seen.
+- The capture buffer was capped by count but never by size, so a scan exceeded session storage and every subsequent capture rejected. Analytics subdomains are also no longer recorded as workflow traffic.
+- A failed queue write no longer aborts an otherwise successful collect, and an empty collection is no longer persisted as though it were a queue.
+
 ## [0.11.6] - 2026-07-27
 
 ### Changed

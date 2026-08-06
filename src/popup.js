@@ -79,7 +79,7 @@ const applyPlatform = (tab) => {
 
 const notSupported = () => setStatus("not a Pabbly or Zapier tab", "err");
 
-const EXPECTED_CONTENT_VERSION = "0.11.5";
+const EXPECTED_CONTENT_VERSION = "0.13.0";
 
 const checkContentVersion = async (tabId) => {
   const ping = await sendTab(tabId, { type: "ping" });
@@ -97,6 +97,9 @@ const checkContentVersion = async (tabId) => {
       `${state.platform.label} page (a normal F5 is not always enough), then try again.`;
     return false;
   }
+  // Clear the failure text a previous check left behind: it outlived the problem and read as a live
+  // error while collection was in fact running normally.
+  if (/content script/i.test(previewEl.textContent || "")) previewEl.textContent = "";
   return true;
 };
 
@@ -366,10 +369,20 @@ const renderInventory = () => {
   if (!inv.length) return;
 
   const payload = () => JSON.stringify(buildInventoryExport(inv, state.dom.url, state.platform), null, 2);
+
+  // The two inventory sources mean different things and must not read alike: the editor's switcher is
+  // the whole account, the Task History tab is a 15-day run log of which this DOM is one page.
+  const hist = state.dom.history;
+  const cov = hist && hist.coverage;
   const label = el("div", {
     className: "inv-label",
-    textContent: `All ${terms().unitPlural} in account: ${inv.length}`
+    textContent:
+      state.dom.inventorySource === "task-history"
+        ? `${inv.length} ${terms().unitPlural} in Task History` +
+          (cov ? ` · from ${cov.seenRows} of ${cov.totalRows.toLocaleString()} run rows` : "")
+        : `All ${terms().unitPlural} in account: ${inv.length}`
   });
+  if (cov && !cov.complete) label.title = "This page only. Paging continues until no new workflows appear.";
   const copyBtn = el("button", { type: "button", className: "primary", textContent: "Export list" });
   copyBtn.addEventListener("click", () => copy(payload(), "Inventory copied"));
   const dlBtn = el("button", { type: "button", className: "ghost icon-btn", title: "Download list" });
@@ -424,11 +437,17 @@ const renderBulk = (bulk) => {
   const errors = bulk.errors || 0;
   const running = bulk.active && !bulk.paused;
 
+  // A rewrite run drives the same crawler, so it lands here too — and must not describe itself as a
+  // capture, least of all while it is writing to the account.
+  const rewriting = bulk.mode === "rewrite";
+  const verb = rewriting ? (bulk.apply ? "Applying fixes" : "Scanning") : "Bulk capture";
   const headText = running
-    ? `Bulk capture: ${done}/${total}…`
+    ? `${verb}: ${done}/${total}…`
     : bulk.paused
       ? `Paused at ${done}/${total}`
-      : `Bulk done: ${bulk.done || done} ${terms().unitPlural}`;
+      : rewriting
+        ? `${bulk.apply ? "Apply" : "Scan"} done: ${bulk.done || done} ${terms().unitPlural}`
+        : `Bulk done: ${bulk.done || done} ${terms().unitPlural}`;
   bulkEl.appendChild(
     el("div", { className: "bulk-head", textContent: errors ? `${headText} · ${errors} errors` : headText })
   );
@@ -480,7 +499,7 @@ const renderBulk = (bulk) => {
     row.appendChild(cancel);
   }
 
-  if (bulk.stored) {
+  if (bulk.stored && !rewriting) {
     const copyAll = el("button", { type: "button", className: "primary", textContent: "Copy all" });
     copyAll.addEventListener("click", async () =>
       copy(JSON.stringify(await bulkExportPayload(), null, 2), `All ${terms().unitPlural} copied`)
@@ -495,7 +514,7 @@ const renderBulk = (bulk) => {
 
   bulkEl.appendChild(row);
 
-  if (bulk.stored) {
+  if (bulk.stored && !rewriting) {
     const row2 = el("div", { className: "row" });
 
     // One file per item: a single account-wide JSON will not fit any model's context window.
@@ -595,6 +614,17 @@ let bulkTimer = null;
 const pollBulk = async () => {
   const bulk = await sendRuntime({ type: "getBulk" });
   renderBulk(bulk);
+
+  // Findings stream in as they are discovered. Waiting for completion meant a 430-workflow scan gave no
+  // signal for hours — long enough to spend a whole run learning the rule matched nothing. Apply stays
+  // disabled while the scan is still going: a partial report is for watching, not for acting on.
+  if (bulk && bulk.mode === "rewrite" && bulk.report) {
+    fxReport = await collectFxRun(!!bulk.apply);
+    if (fxReport) fxReport.partialRun = !!bulk.active;
+    renderFxReport();
+    if (bulk.active) fxApplyBtn.disabled = true;
+  }
+
   if (bulk && bulk.active && !bulk.paused) {
     if (!bulkTimer) bulkTimer = setInterval(pollBulk, 1500);
   } else if (bulkTimer) {
@@ -616,6 +646,19 @@ const refresh = async () => {
     renderList();
     return;
   }
+  // Checked here, not just before an action. Reloading the extension swaps the panel and the service
+  // worker but leaves the content script already injected in an open tab, so the panel can be new while
+  // the page is old. That combination silently answers scrapeDom with the previous version's shape —
+  // which read as "nothing to list" rather than "hard-reload the page", and cost a debugging round trip.
+  if (!(await checkContentVersion(tab.id))) {
+    state.workflows = [];
+    state.dom = null;
+    inventoryEl.textContent = "";
+    filtersEl.textContent = "";
+    renderList();
+    return;
+  }
+
   const captures = await getCaptures(tab.id);
   const dom = await sendTab(tab.id, { type: "scrapeDom" });
   const last = await sendTab(tab.id, { type: "getLastResult" });
@@ -624,7 +667,14 @@ const refresh = async () => {
   const lastHasData =
     last && last.steps && last.steps.some((s) => (s.mappings && s.mappings.length) || s.routes || s.filter);
   state.dom = lastHasData
-    ? { url: last.url, currentWorkflowName: last.name, inventory: (dom && dom.inventory) || [], steps: last.steps }
+    ? {
+        url: last.url,
+        currentWorkflowName: last.name,
+        inventory: (dom && dom.inventory) || [],
+        inventorySource: dom && dom.inventorySource,
+        history: dom && dom.history,
+        steps: last.steps
+      }
     : dom;
 
   const fromDom = domWorkflow(state.dom, state.platform);
@@ -756,6 +806,9 @@ $("clear").addEventListener("click", async () => {
     await chrome.storage.session.remove(`captures_${tab.id}`);
     await chrome.storage.local.remove(STATE_KEY(tab.id));
   }
+  // Every tab's snapshot, not just this one: they are the bulk of what fills storage.local, they are all
+  // re-derivable with Refresh, and a quota error is exactly when someone reaches for Clear.
+  const freed = await pruneLocalStorage();
   await sendRuntime({ type: "clearBulk" });
   if (bulkTimer) {
     clearInterval(bulkTimer);
@@ -772,7 +825,12 @@ $("clear").addEventListener("click", async () => {
     levels: [],
     renderLimit: RENDER_CHUNK
   };
-  setStatus("cleared");
+  const left = await localBytes();
+  setStatus(
+    `cleared${freed ? ` · freed ${freed} cached snapshot${freed === 1 ? "" : "s"}` : ""}` +
+      (left != null ? ` · ${Math.round(left / 1024)} KB still in use` : ""),
+    "ok"
+  );
   inventoryEl.textContent = "";
   bulkEl.textContent = "";
   filtersEl.textContent = "";
@@ -789,7 +847,7 @@ $("dlRaw").addEventListener("click", () =>
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg) return;
   if (msg.type === "bulkProgress" || msg.type === "bulkDone" || msg.type === "bulkPaused") pollBulk();
-  if (msg.type === "bulkDone") toast(`Bulk capture finished · ${msg.count} ${terms().unitPlural}`);
+  if (msg.type === "bulkDone") toast(`Run finished · ${msg.count} ${terms().unitPlural}`);
   if (msg.type === "bulkPaused" && msg.reason) toast(msg.reason, "err");
   if (msg.type === "bulkNote" && msg.message) toast(msg.message);
 });
@@ -800,6 +858,608 @@ const onTabChanged = async () => {
   const tab = await activeTab();
   if (applyPlatform(tab)) refresh();
 };
+
+// --- Find & replace pass --------------------------------------------------------------------------
+// Two passes over the same queue and the same rule: Scan writes nothing and produces a report; Apply
+// replays it, writing and saving each field. Apply stays disabled until a scan has found something,
+// so the destructive button is never the first one reachable.
+const FX_DEFAULT = { find: "secure.tutorcruncher.com", replace: "app.tutorcruncher.com" };
+
+const fxFind = $("fxFind");
+const fxReplace = $("fxReplace");
+const fxScanBtn = $("fxScan");
+const fxApplyBtn = $("fxApply");
+const fxLedgerEl = $("fxLedger");
+const fxReportEl = $("fxReport");
+
+let fxReport = null;
+
+const fxRule = () => ({
+  find: (fxFind.value || "").trim() || FX_DEFAULT.find,
+  replace: (fxReplace.value || "").trim() || FX_DEFAULT.replace
+});
+
+// A collected queue wins over whatever a single history page happens to show: the run log paginates at
+// 10 rows, so the visible page is never the work list.
+let fxCollected = null;
+let fxCollecting = false;
+
+const fxQueue = () => {
+  if (fxCollected && fxCollected.workflows.length) {
+    const activeOnly = $("fxActiveOnly").checked;
+    return fxCollected.workflows
+      // `active === false` only: a null means the source never said, and dropping those would quietly
+      // shrink the queue on any endpoint that omits the field.
+      .filter((w) => !activeOnly || w.active !== false)
+      .map((w) => ({ id: w.id, name: w.name, folder: w.folder || null }));
+  }
+  const inv = (state.dom && state.dom.inventory) || [];
+  return inv.map((i) => ({ id: i.id, name: i.name, folder: i.folder || null }));
+};
+
+const FX_QUEUE_KEY = "fx_collected_queue";
+const DRY_PAGES = 12;
+const MAX_PAGES = 400;
+
+// chrome.storage.local is one shared ~10MB budget: every tab's popup snapshot, the bulk run's report and
+// this queue all live in it. A rejected write used to abort the collect handler AFTER the fetch had
+// already succeeded, so the panel kept the previous status and a stale queue and looked exactly like an
+// API failure. Persisting the queue is a convenience, never a precondition — losing it costs one refetch.
+const QUEUE_FIELDS = (w) => ({
+  id: w.id,
+  name: w.name,
+  folder: w.folder || null,
+  active: w.active != null ? w.active : null,
+  tasks: w.tasks != null ? w.tasks : null
+});
+
+const localBytes = async () => {
+  try {
+    return await chrome.storage.local.getBytesInUse(null);
+  } catch (_) {
+    return null;
+  }
+};
+
+// Per-tab popup snapshots are the big, disposable occupants: they hold whole captured workflows and are
+// re-derivable by clicking Refresh. Nothing else is dropped without being asked.
+const pruneLocalStorage = async () => {
+  try {
+    const all = await chrome.storage.local.get(null);
+    const drop = Object.keys(all).filter((k) => k.startsWith("popupState_"));
+    if (drop.length) await chrome.storage.local.remove(drop);
+    return drop.length;
+  } catch (_) {
+    return 0;
+  }
+};
+
+const persistQueue = async (queue) => {
+  // Projected explicitly rather than stored as-received: whatever a source hands back, only these five
+  // fields are ever needed, and an endpoint that starts returning fat records must not fill the budget.
+  const payload = { ...queue, workflows: (queue.workflows || []).map(QUEUE_FIELDS) };
+  try {
+    await chrome.storage.local.set({ [FX_QUEUE_KEY]: payload });
+    return { stored: true };
+  } catch (first) {
+    const pruned = await pruneLocalStorage();
+    try {
+      await chrome.storage.local.set({ [FX_QUEUE_KEY]: payload });
+      return { stored: true, pruned };
+    } catch (second) {
+      return { stored: false, pruned, error: String((second && second.message) || second), bytes: await localBytes() };
+    }
+  }
+};
+
+const renderQueueInfo = () => {
+  const info = $("fxQueueInfo");
+  if (!fxCollected) {
+    info.textContent = "";
+    return;
+  }
+  const { workflows, via, counts, pages, stoppedBecause, pageSize, partial } = fxCollected;
+
+  if (via === "api") {
+    const c = counts || {};
+    info.textContent =
+      `Queue: ${workflows.length} workflows from Pabbly's API in one request` +
+      (c.active != null ? ` · ${c.active} active, ${c.inactive} inactive` : "") +
+      (c.withUsage ? ` · task counts for ${c.withUsage}` : "") +
+      (partial ? " · INCOMPLETE — usage endpoint only, idle workflows missing" : "");
+    return;
+  }
+
+  info.textContent =
+    `Queue: ${workflows.length} workflows from ${pages} page${pages === 1 ? "" : "s"}` +
+    (pageSize ? ` at ${pageSize}/page` : "") +
+    ` — stopped because ${stoppedBecause}. Paged from the DOM because the API failed` +
+    (fxCollected.apiError ? `: ${fxCollected.apiError}` : ".");
+};
+
+// Paging is driven from here rather than inside one long content-script call, so progress is visible and
+// it can be stopped. Collection must finish before a scan starts: scanning navigates the tab to each
+// workflow editor, which destroys the history page the paging depends on.
+const collectFromHistory = async (tabId) => {
+  const byId = new Map();
+  let pages = 0;
+  let dry = 0;
+  let stoppedBecause = "reached the page limit";
+
+  const size = await sendTab(tabId, { type: "setHistoryPageSize", target: 100 });
+  const pageSize = size && size.pageSize ? size.pageSize : null;
+
+  while (pages < MAX_PAGES) {
+    if (!fxCollecting) {
+      stoppedBecause = "you stopped it";
+      break;
+    }
+
+    const h = await sendTab(tabId, { type: "scrapeHistory" });
+    if (!h || !h.workflows) {
+      stoppedBecause = "the page stopped responding";
+      break;
+    }
+
+    let fresh = 0;
+    h.workflows.forEach((w) => {
+      if (byId.has(w.id)) return;
+      byId.set(w.id, w);
+      fresh += 1;
+    });
+    pages += 1;
+    setStatus(`collecting… page ${pages} · ${byId.size} workflows · ${fresh} new`, "warn");
+
+    // The convergence rule: stop when pages stop yielding workflows we haven't seen, not at some
+    // arbitrary depth. 24k rows fold to a couple of hundred workflows, so this goes quiet quickly.
+    dry = fresh ? 0 : dry + 1;
+    if (dry >= DRY_PAGES) {
+      stoppedBecause = `${DRY_PAGES} pages in a row had nothing new`;
+      break;
+    }
+
+    const adv = await sendTab(tabId, { type: "advanceHistoryPage" });
+    if (!adv || !adv.advanced) {
+      stoppedBecause = adv && adv.reason === "no next page" ? "it reached the last page" : "paging stalled";
+      break;
+    }
+  }
+
+  return { workflows: [...byId.values()], pages, stoppedBecause, pageSize, at: Date.now() };
+};
+
+$("fxActiveOnly").addEventListener("change", () => {
+  if (!fxCollected) return;
+  renderQueueInfo();
+  setStatus(`${fxQueue().length} workflows queued`, "ok");
+});
+
+$("fxCollect").addEventListener("click", async () => {
+  const btn = $("fxCollect");
+  if (fxCollecting) {
+    fxCollecting = false;
+    btn.textContent = "Collect from history";
+    return;
+  }
+
+  const tab = await activeTab();
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
+  if (platformId() !== "pabbly") return setStatus("the find & replace pass is Pabbly-only", "err");
+  if (!(await checkContentVersion(tab.id))) return;
+  if (!/\/history\/task-history/.test(tab.url || "")) {
+    return setStatus("open the Task History page first", "err");
+  }
+
+  fxCollecting = true;
+  btn.textContent = "Stop collecting";
+  let apiError = null;
+  try {
+    // The API is the whole catalogue in one request, including workflows idle long enough to be absent
+    // from the usage tab. DOM paging is only for when it is unavailable.
+    setStatus("asking Pabbly's API for the workflow list…", "warn");
+    const cat = await sendTab(tab.id, { type: "fetchCatalogue" });
+
+    if (cat && cat.workflows && cat.workflows.length) {
+      fxCollected = {
+        via: "api",
+        workflows: cat.workflows,
+        counts: cat.counts || null,
+        partial: !!cat.partial,
+        errors: cat.errors && cat.errors.length ? cat.errors : null,
+        at: Date.now()
+      };
+    } else {
+      // A failure arrives in three different shapes, and reading only one of them turned a real error
+      // into "no response" — leaving nothing to diagnose from.
+      apiError =
+        (cat && cat.error) ||
+        (cat && cat.errors && cat.errors.length
+          ? cat.errors.map((e) => `${e.source || "?"}: ${e.error}`).join(" | ")
+          : null) ||
+        (cat ? "API returned no workflows" : "no response from the page");
+
+      if (!/\/history\//.test(tab.url || "")) {
+        previewEl.textContent = [
+          "Collect failed.",
+          "",
+          `API: ${apiError}`,
+          "",
+          "Open the Task History page if you want to fall back to paging the table instead."
+        ].join("\n");
+        return setStatus("API unavailable — details in the box below", "err");
+      }
+      setStatus("API unavailable — paging the table instead", "warn");
+      fxCollected = { via: "dom", apiError, ...(await collectFromHistory(tab.id)) };
+    }
+
+    // An empty collection is not a queue. Persisting one produced "0 workflows from 0 pages — stopped
+    // because you stopped it", which reads like a result rather than a failure, and left Scan pointing
+    // at nothing.
+    if (!fxCollected.workflows.length) {
+      const why = fxCollected.stoppedBecause || "nothing was collected";
+      previewEl.textContent = [
+        "Collect produced no workflows.",
+        "",
+        `API: ${apiError || "(not attempted)"}`,
+        `DOM paging: ${why}`
+      ].join("\n");
+      fxCollected = null;
+      try {
+        await chrome.storage.local.remove(FX_QUEUE_KEY);
+      } catch (_) {}
+      renderQueueInfo();
+      return setStatus(`collected nothing — ${why}`, "err");
+    }
+
+    // Render and report BEFORE persisting, so a storage failure can never hide a successful collect.
+    renderQueueInfo();
+    const queued = fxQueue().length;
+    setStatus(`${queued} workflows queued — now Scan`, "ok");
+
+    const persisted = await persistQueue(fxCollected);
+    if (!persisted.stored) {
+      toast("Queue held in memory only — storage is full", "err");
+      previewEl.textContent = [
+        "The queue was collected but could not be saved.",
+        "",
+        persisted.error,
+        persisted.bytes != null ? `storage.local in use: ${persisted.bytes} bytes` : null,
+        "",
+        "It still works for Scan and Apply right now, but closing the panel loses it.",
+        "Click Clear to free space, then Collect again if you want it to survive a reload."
+      ]
+        .filter((line) => line != null)
+        .join("\n");
+      setStatus(`${queued} workflows queued (in memory only — storage full)`, "warn");
+    } else if (persisted.pruned) {
+      toast(`Freed ${persisted.pruned} cached tab snapshot(s) to save the queue`);
+    }
+  } finally {
+    fxCollecting = false;
+    btn.textContent = "Collect workflows";
+  }
+});
+
+const renderLedgerLine = async () => {
+  const stats = await sendRuntime({ type: "ledgerStats" });
+  if (!stats || !stats.total) {
+    fxLedgerEl.textContent = "No workflows handled yet.";
+    return;
+  }
+  const c = stats.counts;
+  fxLedgerEl.textContent =
+    `Handled so far: ${stats.total} — ${c.fixed} fixed, ${c.clean} already clean, ` +
+    `${c.failed} failed (will retry), ${c.fieldsChanged || stats.fieldsChanged} fields changed. ` +
+    `These are skipped on the next run.`;
+};
+
+const fieldLine = (f) => {
+  const bits = [el("span", { className: "fx-field-name", textContent: f.field })];
+  if (f.code) bits.push(document.createTextNode(" (code)"));
+  bits.push(document.createTextNode(` ×${f.count}`));
+
+  if (f.applied === true && f.verified === true) bits.push(el("span", { className: "fx-ok", textContent: " ✓ saved" }));
+  else if (f.applied === true && f.verified === null) bits.push(el("span", { className: "fx-warn", textContent: " ~ saved, unverified" }));
+  else if (f.error) bits.push(el("span", { className: "fx-bad", textContent: ` ✗ ${f.error}` }));
+
+  const line = el("div", { className: "fx-field" }, bits);
+  (f.contexts || []).slice(0, 2).forEach((c) => {
+    line.appendChild(el("div", { className: "fx-ctx", textContent: c }));
+  });
+  return line;
+};
+
+const renderFxReport = () => {
+  fxReportEl.textContent = "";
+  if (!fxReport) return;
+
+  const { rows, counts, applied, skippedByLedger, truncated } = fxReport;
+  // "Found 0 fields" is only meaningful alongside how much was actually read, so a single-workflow test
+  // reports steps read and steps that never loaded rather than just the finding count.
+  const one = fxReport.singleWorkflow ? rows[0] : null;
+  const readNote = one
+    ? ` · ${one.counts.scanned || 0} step(s) read` +
+      (one.counts.unloaded ? `, ${one.counts.unloaded} never loaded` : "")
+    : "";
+  const head =
+    (fxReport.partialRun ? "so far — " : "") +
+    (applied
+      ? `Applied: ${counts.applied} of ${counts.fields} fields in ${counts.workflows} workflows` +
+        (counts.failed ? ` · ${counts.failed} failed` : "")
+      : fxReport.singleWorkflow
+        ? `This workflow: ${counts.fields} field(s) to change${readNote}`
+        : `Found ${counts.fields} fields to change in ${counts.workflows} workflows`);
+  fxReportEl.appendChild(el("div", { className: "fx-wf-name", textContent: head }));
+
+  if (skippedByLedger) {
+    fxReportEl.appendChild(
+      el("div", { className: "fx-ctx", textContent: `${skippedByLedger} already handled, skipped.` })
+    );
+  }
+
+  rows.forEach((wf) => {
+    const box = el("div", { className: "fx-wf" }, [
+      el("div", { className: "fx-wf-name", textContent: wf.name || wf.id }),
+      el("div", { className: "fx-wf-folder", textContent: wf.folder || "(no folder)" })
+    ]);
+    if (wf.error) box.appendChild(el("div", { className: "fx-bad", textContent: `✗ ${wf.error}` }));
+    (wf.steps || []).forEach((s) => {
+      const label = [s.routeName ? `route ${s.routeName} →` : null, s.indexLabel ? `${s.indexLabel}.` : null, s.title || s.app]
+        .filter(Boolean)
+        .join(" ");
+      box.appendChild(el("div", { className: "fx-field", textContent: label }));
+      (s.fields || []).forEach((f) => box.appendChild(fieldLine(f)));
+      if (s.saved === false) {
+        box.appendChild(el("div", { className: "fx-bad", textContent: `✗ save failed: ${s.saveError || "unknown"}` }));
+      }
+    });
+    fxReportEl.appendChild(box);
+  });
+
+  if (truncated) {
+    fxReportEl.appendChild(
+      el("div", { className: "fx-warn", textContent: `+${truncated} more workflows not shown in this report.` })
+    );
+  }
+};
+
+// Reads the finished run out of background state and folds it into something reviewable. Both passes
+// use this, so the apply report is the scan report with outcomes filled in.
+const collectFxRun = async (applied) => {
+  const bulk = await sendRuntime({ type: "getBulk" });
+  if (!bulk) return null;
+  const rows = bulk.report || [];
+  const counts = rows.reduce(
+    (acc, r) => ({
+      workflows: acc.workflows + (r.counts.fields ? 1 : 0),
+      fields: acc.fields + r.counts.fields,
+      applied: acc.applied + (r.counts.applied || 0),
+      failed: acc.failed + (r.counts.failed || 0)
+    }),
+    { workflows: 0, fields: 0, applied: 0, failed: 0 }
+  );
+  return {
+    rows,
+    counts,
+    applied,
+    rule: bulk.rule || fxRule(),
+    skippedByLedger: bulk.skippedByLedger || 0,
+    truncated: bulk.reportTruncated || 0,
+    finishedAt: bulk.finishedAt || null
+  };
+};
+
+const startFxRun = async (apply) => {
+  const tab = await activeTab();
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
+  if (platformId() !== "pabbly") return setStatus("the find & replace pass is Pabbly-only", "err");
+  if (!(await checkContentVersion(tab.id))) return;
+
+  const rule = fxRule();
+  if (rule.find === rule.replace) return setStatus("current and replacement values are identical", "err");
+
+  const queue = fxQueue();
+  if (!queue.length) {
+    // An empty queue has three quite different causes, and saying which one saves a round trip.
+    const onHistory = /\/history\/task-history/.test((tab && tab.url) || "");
+    if (!state.dom) return setStatus("nothing read from the page yet — click Capture / Refresh", "err");
+    if (onHistory && state.dom.inventorySource !== "task-history") {
+      return setStatus("the history reader didn't run — hard-reload the page (Ctrl+Shift+R)", "err");
+    }
+    return setStatus(
+      onHistory
+        ? "no workflow rows on this history page — check the date filter, then Capture / Refresh"
+        : "no workflows listed — open Task History, then Capture / Refresh",
+      "err"
+    );
+  }
+
+  const res = await sendRuntime({
+    type: "startRewrite",
+    tabId: tab.id,
+    platform: platformId(),
+    workflows: queue,
+    rule,
+    apply,
+    batchSize: state.platform.bulk.batchSize
+  });
+
+  if (!res || !res.started) {
+    setStatus(res && res.reason ? res.reason : "could not start", "warn");
+    await renderLedgerLine();
+    return;
+  }
+
+  setStatus(
+    `${apply ? "applying" : "scanning"} ${res.total} workflows — the tab will navigate through them`,
+    "warn"
+  );
+  fxApplyBtn.disabled = true;
+};
+
+// Runs the rewrite pass against the workflow already open, with no queue, no navigation and no ledger
+// write. This exists because "0 findings across 27 workflows" is indistinguishable from a detector that
+// silently matches nothing — a positive control needs one workflow you KNOW contains the string, checked
+// in seconds. It also isolates a single slow workflow for diagnosis without re-running a 430-item queue.
+// Both single-workflow actions share this. Deliberately does NOT touch the ledger: these are manual,
+// one-off operations on the workflow in front of you, and a queue run should reach its own conclusions.
+const runOnCurrentWorkflow = async (apply) => {
+  const tab = await activeTab();
+  applyPlatform(tab);
+  if (!supported()) return notSupported();
+  if (platformId() !== "pabbly") return setStatus("the find & replace pass is Pabbly-only", "err");
+  if (!/\/workflow\/mapping\//.test(tab.url || "")) {
+    return setStatus(`open a workflow first (this ${apply ? "applies to" : "tests"} the one on screen)`, "err");
+  }
+  if (!(await checkContentVersion(tab.id))) return;
+
+  const rule = fxRule();
+  if (rule.find === rule.replace) return setStatus("current and replacement values are identical", "err");
+
+  setStatus(
+    apply ? "applying to this workflow — writing and saving each step…" : "testing the rule on this workflow…",
+    "warn"
+  );
+  const started = Date.now();
+  const res = await sendTab(tab.id, {
+    type: "rewriteWorkflow",
+    rule,
+    apply,
+    stepDelay: 250,
+    deadlineMs: 240000
+  });
+  const took = Math.round((Date.now() - started) / 1000);
+
+  if (!res || res.error) {
+    setStatus(`test failed: ${(res && res.error) || "no response"}`, "err");
+    previewEl.textContent = JSON.stringify(res || { error: "no response" }, null, 2);
+    return;
+  }
+
+  const c = res.counts || {};
+  fxReport = {
+    rows: [
+      {
+        id: res.url,
+        name: res.name,
+        folder: null,
+        counts: c,
+        error: res.error || null,
+        steps: res.steps || []
+      }
+    ],
+    counts: {
+      workflows: c.fields ? 1 : 0,
+      fields: c.fields || 0,
+      applied: c.applied || 0,
+      failed: c.failed || 0
+    },
+    applied: apply,
+    singleWorkflow: true,
+    rule
+  };
+  renderFxReport();
+  fxApplyBtn.disabled = true;
+
+  // "Apply to this one" only unlocks once a scan on THIS workflow found something to change, so the
+  // destructive single-shot can never be the first button that does anything.
+  $("fxApplyOne").disabled = apply || !(c.fields > 0);
+
+  // Steps read vs steps that never loaded is the number that says whether "0 found" means anything.
+  const detail = [
+    `${c.scanned || 0} step(s) read`,
+    c.unloaded ? `${c.unloaded} never loaded` : null,
+    res.timedOut ? "hit the time limit" : null,
+    `${took}s`
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  if (!apply) {
+    setStatus(
+      c.fields ? `found ${c.fields} field(s) here · ${detail}` : `no matches here · ${detail}`,
+      c.fields ? "ok" : c.unloaded || res.timedOut ? "warn" : "ok"
+    );
+    previewEl.textContent = JSON.stringify(res, null, 2);
+    return;
+  }
+
+  // On an apply, "written" is not the claim that matters — "verified" is. Each field is re-read after the
+  // save and only counts if the old value is genuinely gone.
+  const allFields = (res.steps || []).flatMap((s) => s.fields || []);
+  const verified = allFields.filter((f) => f.verified === true).length;
+  const unverified = allFields.filter((f) => f.applied && f.verified !== true).length;
+  const failedFields = allFields.filter((f) => f.error && !f.skipped).length;
+  setStatus(
+    `applied ${c.applied || 0} of ${c.fields} · ${verified} verified` +
+      (unverified ? ` · ${unverified} unverified` : "") +
+      (failedFields ? ` · ${failedFields} failed` : "") +
+      ` · ${detail}`,
+    failedFields || unverified ? "warn" : verified ? "ok" : "err"
+  );
+  previewEl.textContent = JSON.stringify(res, null, 2);
+};
+
+$("fxTestOne").addEventListener("click", () => runOnCurrentWorkflow(false));
+
+$("fxApplyOne").addEventListener("click", async () => {
+  if (!fxReport || !fxReport.singleWorkflow || !fxReport.counts.fields) {
+    return setStatus("test this workflow first", "warn");
+  }
+  await runOnCurrentWorkflow(true);
+});
+
+fxScanBtn.addEventListener("click", () => startFxRun(false));
+
+fxApplyBtn.addEventListener("click", async () => {
+  if (!fxReport || !fxReport.counts.fields) return setStatus("run a scan first", "warn");
+  // No confirm(): a native dialog tears down the panel and kills this handler before the message is
+  // ever sent. The button being disabled until a scan exists is the guard instead.
+  await startFxRun(true);
+});
+
+$("fxExport").addEventListener("click", () => {
+  if (!fxReport) return setStatus("nothing to export — run a scan first", "warn");
+  copy(JSON.stringify(fxReport, null, 2), "Report copied");
+  download(JSON.stringify(fxReport, null, 2), fileFor("find-replace-report"));
+});
+
+$("fxReset").addEventListener("click", async () => {
+  await sendRuntime({ type: "clearLedger" });
+  await chrome.storage.local.remove(FX_QUEUE_KEY);
+  fxCollected = null;
+  fxReport = null;
+  renderQueueInfo();
+  renderFxReport();
+  await renderLedgerLine();
+  toast("Ledger and queue cleared — every workflow is eligible again");
+});
+
+// A rewrite run finishing is what turns Apply on, and it is also how an apply run reports back.
+const onFxRunDone = async () => {
+  const bulk = await sendRuntime({ type: "getBulk" });
+  if (!bulk || bulk.mode !== "rewrite") return;
+  fxReport = await collectFxRun(!!bulk.apply);
+  renderFxReport();
+  await renderLedgerLine();
+  const hasWork = fxReport && fxReport.counts.fields > 0;
+  fxApplyBtn.disabled = !hasWork || !!bulk.apply;
+  setStatus(
+    bulk.apply
+      ? `applied ${fxReport.counts.applied} of ${fxReport.counts.fields} fields` +
+          (fxReport.counts.failed ? ` · ${fxReport.counts.failed} failed` : "")
+      : hasWork
+        ? `scan found ${fxReport.counts.fields} fields in ${fxReport.counts.workflows} workflows — review, then Apply`
+        : "scan found nothing to change",
+    fxReport.counts.failed ? "warn" : hasWork || bulk.apply ? "ok" : "warn"
+  );
+};
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === "bulkDone") onFxRunDone();
+});
 
 chrome.tabs.onActivated.addListener(onTabChanged);
 chrome.tabs.onUpdated.addListener((_tabId, info) => {
@@ -842,6 +1502,23 @@ const init = async () => {
   } else {
     refresh();
   }
+
+  fxFind.value = FX_DEFAULT.find;
+  fxReplace.value = FX_DEFAULT.replace;
+  if (supported() && platformId() === "pabbly") {
+    // A collected queue outlives the panel being closed: collecting is minutes of paging, and losing it
+    // to a stray panel close would mean doing all of it again.
+    const stored = await chrome.storage.local.get(FX_QUEUE_KEY);
+    if (stored[FX_QUEUE_KEY] && stored[FX_QUEUE_KEY].workflows) {
+      fxCollected = stored[FX_QUEUE_KEY];
+      renderQueueInfo();
+    }
+    await renderLedgerLine();
+  }
+
+  // A rewrite run that finished while the panel was closed still has its report in background state.
+  const bulk = await sendRuntime({ type: "getBulk" });
+  if (bulk && bulk.mode === "rewrite" && !bulk.active) await onFxRunDone();
 
   pollBulk();
 };

@@ -49,6 +49,47 @@ Zapier's endpoints are undocumented and can change, so the learned template alwa
 
 Zapier's flat node list is rebuilt into a tree via `parent_id`. **Paths by Zapier** becomes a `router` with one route per Path; `{{123456__field}}` tokens are resolved from node ids to step positions.
 
+## Find & replace across workflows (Pabbly)
+
+The **Find & replace across workflows** panel rewrites a value — originally the TutorCruncher API host,
+`secure.tutorcruncher.com` → `app.tutorcruncher.com` — across every step of every queued workflow, then
+clicks each step's own **Save**. It is the only part of the extension that *writes* to the account, so
+it is collapsed by default and **Apply** stays disabled until a scan has produced something to apply.
+
+1. Open **Task History**. The panel lists one entry per workflow found in the run log (the table itself
+   is one row per *execution* — ~24k rows over 15 days — so rows are folded by workflow id).
+2. Enter the current value and its replacement, then **Scan (no changes)**. The tab walks each workflow,
+   expands every step, and reports each match: workflow, folder, step, field, and the surrounding text.
+3. Review, then **Apply & Save**. Each field is written, the step is saved, and the field is **re-read**
+   to confirm the old value is gone. Anything unverified is reported as such, never assumed applied.
+
+**Converging without paging 2,406 pages.** Every visit is recorded in a ledger
+(`chrome.storage.local`), including workflows found already clean — otherwise the pass never
+converges. A workflow fixed today keeps reappearing in the run log from executions days ago; the ledger
+drops those from the queue, so paging stops as soon as pages stop yielding unseen workflows. `failed` is
+the one outcome left unsettled, so a timeout is retried rather than written off. **Reset ledger** makes
+everything eligible again.
+
+### Why the write path looks the way it does
+
+Every editable Pabbly value — API endpoint URLs, body params, filter values, and **Code (Pabbly)
+JavaScript/Python bodies alike** — lives in a hidden `<textarea>` that TinyMCE has taken over. Three
+consequences:
+
+- **Writes go through the page's realm.** Assigning `.value` on that hidden textarea appears to work and
+  is then lost when the editor syncs. `src/tinymce-bridge.js` runs in the MAIN world and writes via
+  `tinymce.get(id).setContent()` + `.save()`. An apply run refuses to start if that bridge doesn't answer.
+- **The value is HTML, so replacement is tag-aware.** Text is interleaved with
+  `<span class="dynamic_value" data-attr="…">` mapping chips, and a code body stores newlines as `<br>`.
+  A match inside a tag is *reported and not written* — a mangled `data-attr` silently unbinds the mapping
+  and the step starts sending an empty value.
+- **Only named field elements are touched.** A step also carries mapping `<select>` dropdowns whose
+  `<option>` text contains full URLs from the trigger's sample payload, including the host being searched
+  for. Those are not fields, and `.api_response_con` (the captured test response) is never written.
+
+> **Pabbly has no undo.** Run **Export ALL** first — that gives you a full before-snapshot of every step
+> to diff or restore from by hand.
+
 ## What the exported JSON contains
 
 | Key | Meaning |
@@ -69,14 +110,19 @@ Bulk exports wrap the same per-item shape in `workflows[]` with an account-wide 
 ## Files
 
 | File | Role |
-|------|------|
+| ---- | ---- |
 | `manifest.json` | MV3 config, permissions, per-platform content scripts |
 | `src/platforms/registry.js` | Branding, terminology, URLs and pacing per platform |
-| `src/platforms/pabbly-content.js` | Pabbly adapter — DOM scraping, step expansion, router crawl |
+| `src/platforms/pabbly-content.js` | Pabbly adapter — DOM scraping, step expansion, router crawl, rewrite walk |
+| `src/platforms/pabbly-fields.js` | Which step elements hold a value, and how each is read and written |
+| `src/platforms/pabbly-history.js` | Task History → workflow queue, run-log scale, page advancing |
 | `src/platforms/zapier-content.js` | Zapier adapter — node graph, endpoint learning, in-place fetch |
+| `src/rewrite.js` | Tag-aware find & replace over one field value |
+| `src/rewrite-ledger.js` | Durable record of handled workflows, so each is touched once |
+| `src/tinymce-bridge.js` | Runs in the page (MAIN world), writes TinyMCE-backed fields |
 | `src/content.js` | Shared content-script shell: capture bridge and message routing |
 | `src/interceptor.js` | Runs in the page (MAIN world), records same-site fetch/XHR traffic |
-| `src/background.js` | Service worker: bulk crawler, per-tab branding, capture store |
+| `src/background.js` | Service worker: bulk crawler, rewrite runs, branding, capture store |
 | `src/normalizer.js` | Export envelopes and the per-platform system prompts |
 | `src/health.js` | Completeness scoring and warnings |
 | `src/db.js` | IndexedDB store for bulk results (namespaced by platform) |

@@ -1,0 +1,61 @@
+<!--
+  "Task Usage by Workflows" tab, trimmed from the live page. Footer says "1-10 of 276" across 28 pages
+  — one row per workflow, versus the run log's 23,828 rows over 2,383 pages.
+
+  The blocker this fixture pins: these rows have NO <a href="/workflow/mapping/{id}">. The run log's
+  name cell is a link; this one is a bare <span>. So the tab yields names and never ids, and the
+  crawler navigates by id — hence isUsageTab() and hasIds:false.
+
+  Also pinned: two different columns share the generated class css-690vec, so columns are located by
+  header text; and long names carry a "Workflow Name:" aria-label (truncated) while short ones do not.
+-->
+<table class="MuiTable-root css-8n34w8">
+  <thead class="MuiTableHead-root">
+    <tr class="MuiTableRow-root MuiTableRow-head">
+      <th class="MuiTableCell-root MuiTableCell-head" aria-sort="ascending" scope="col"><span><span class="MuiButtonBase-root MuiTableSortLabel-root Mui-active" tabindex="0" role="button"><span aria-label="View workflow status and last execution date/time." class="">Status/Last Executed</span></span></span></th>
+      <th class="MuiTableCell-root MuiTableCell-head" scope="col"><span><div class="MuiBox-root"><span aria-label="Apps which are integrated in the workflow" class="">Application</span></div></span></th>
+      <th class="MuiTableCell-root MuiTableCell-head" scope="col"><span><div class="MuiBox-root"><span aria-label="Name of workflow and folder where it is located." class="">Workflow Name</span></div></span></th>
+      <th class="MuiTableCell-root MuiTableCell-head MuiTableCell-alignRight" scope="col"><span><div class="MuiBox-root"><span aria-label="View how many tasks has been consumed by workflows in specified date range." class="">Task Consumption</span></div></span></th>
+    </tr>
+  </thead>
+  <tbody class="MuiTableBody-root">
+    <tr class="MuiTableRow-root MuiTableRow-hover">
+      <td class="MuiTableCell-root MuiTableCell-body" width="185">
+        <span class="MuiBox-root css-ggscaf" aria-label="Workflow is active.">Active</span>
+        <span class="MuiBox-root css-vx4xfz" aria-label="Last Executed at:  Aug 05, 2026 09:04:06, (UTC -04:00) America/New_York">Aug 05, 2026 09:04:06</span>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body" width="80">
+        <div class="MuiAvatarGroup-root" aria-label="Integrated applications">
+          <div class="MuiAvatar-root"><img alt="app2" src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1759921384-1750921435-1717070803-Delay--Pabbly-.svg"></div>
+        </div>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body css-690vec">
+        <div class="MuiStack-root"><div class="MuiStack-root"><span class="MuiBox-root css-vwu7f8">Add data to GS - Multipage Form (FR)</span></div><div class="MuiStack-root"><span class="MuiTypography-root css-3ej1h7">Home</span></div></div>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body css-690vec" width="350">
+        <span class="MuiBox-root css-38lq77" aria-label="Number of tasks consumed in the last 30 days. Pabbly only counts tasks from external software actions trigger and internal steps are not counted, ensuring you save more!">7855 Tasks Consumed</span>
+        <span class="MuiBox-root css-1aw0in" aria-label="Pabbly Connect does not charge tasks for triggers and internal application steps. You're saving 50% on task usage by using Pabbly Connect.">7071 Free Tasks Consumed</span>
+      </td>
+    </tr>
+    <tr class="MuiTableRow-root MuiTableRow-hover">
+      <td class="MuiTableCell-root MuiTableCell-body" width="185">
+        <span class="MuiBox-root css-1q2bqaq" aria-label="Workflow is inactive.">Inactive</span>
+        <span class="MuiBox-root css-vx4xfz" aria-label="Last Executed at:  Jul 22, 2026 09:32:45, (UTC -04:00) America/New_York">Jul 22, 2026 09:32:45</span>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body" width="80">
+        <div class="MuiAvatarGroup-root" aria-label="Integrated applications">
+          <div class="MuiAvatar-root"><img alt="app2" src="https://s3.us-west-2.amazonaws.com/connect.pabbly/images/1750922372-JSON-EXTRACTOR.svg"></div>
+        </div>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body css-690vec">
+        <div class="MuiStack-root"><div class="MuiStack-root"><span class="MuiBox-root css-vwu7f8" aria-label="Workflow Name: Update -Suivi des heures- when tutor is added/removed &amp; status changes">Update -Suivi des heures- when tutor is added/removed &amp; status changes</span></div><div class="MuiStack-root"><span class="MuiTypography-root css-3ej1h7">Job Org Tracking - General</span></div></div>
+      </td>
+      <td class="MuiTableCell-root MuiTableCell-body css-690vec" width="350">
+        <span class="MuiBox-root css-38lq77" aria-label="Number of tasks consumed in the last 30 days. Pabbly only counts tasks from external software actions trigger and internal steps are not counted, ensuring you save more!">3503 Tasks Consumed</span>
+        <span class="MuiBox-root css-1aw0in" aria-label="Pabbly Connect does not charge tasks for triggers and internal application steps. You're saving 50% on task usage by using Pabbly Connect.">20312 Free Tasks Consumed</span>
+      </td>
+    </tr>
+    <tr class="MuiTableRow-root"><td class="MuiTableCell-root MuiTableCell-body" colspan="12"></td></tr>
+  </tbody>
+</table>
+<div class="MuiBox-root"><div class="MuiTablePagination-root"><div class="MuiToolbar-root MuiTablePagination-toolbar"><p class="MuiTablePagination-selectLabel" id=":r4s:"><span aria-label="Select the number of rows displayed per page." class="">Rows per page:</span></p><div class="MuiInputBase-root MuiTablePagination-input"><div role="combobox" aria-expanded="false" aria-haspopup="listbox" id=":r4r:" class="MuiSelect-select MuiTablePagination-select MuiInputBase-input" tabindex="0">10</div><input aria-invalid="false" name="table-pagination-select" aria-hidden="true" tabindex="-1" class="MuiSelect-nativeInput" value="10"></div><p class="MuiTablePagination-displayedRows"><span style="display: inline-flex;"><span aria-label="Shows the current range of rows being displayed and the total number of rows." class="">1&ndash;10 of 276</span><span><span>Page:</span><span aria-label="Selected page number." class=""><input placeholder="1" value="1"></span><span>of 28</span></span></span></p><div class="MuiTablePagination-actions"><button class="MuiButtonBase-root Mui-disabled MuiIconButton-root" tabindex="-1" type="button" disabled="" aria-label="Go to previous page" title="Go to previous page"></button><button class="MuiButtonBase-root MuiIconButton-root" tabindex="0" type="button" aria-label="Go to next page" title="Go to next page"></button></div></div></div></div>

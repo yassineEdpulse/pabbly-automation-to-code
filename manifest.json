@@ -1,9 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Automation Code Extractor",
-  "version": "0.11.6",
+  "version": "0.13.0",
   "description": "Captures Pabbly Connect workflows and Zapier Zaps (network JSON + DOM) and exports a clean schema ready to hand to Claude for code conversion.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs", "alarms", "sidePanel"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "alarms",
+    "sidePanel"
+  ],
   "host_permissions": [
     "*://*.pabbly.com/*",
     "*://*.zapier.com/*"
@@ -32,20 +39,50 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.pabbly.com/*", "*://*.zapier.com/*"],
-      "js": ["src/interceptor.js"],
+      "matches": [
+        "*://*.pabbly.com/*",
+        "*://*.zapier.com/*"
+      ],
+      "js": [
+        "src/interceptor.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["*://*.pabbly.com/*"],
-      "js": ["src/platforms/pabbly-content.js", "src/content.js"],
+      "matches": [
+        "*://*.pabbly.com/*"
+      ],
+      "js": [
+        "src/tinymce-bridge.js",
+        "src/react-bridge.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://*.pabbly.com/*"
+      ],
+      "js": [
+        "src/rewrite.js",
+        "src/platforms/pabbly-fields.js",
+        "src/platforms/pabbly-history.js",
+        "src/platforms/pabbly-api.js",
+        "src/platforms/pabbly-content.js",
+        "src/content.js"
+      ],
       "run_at": "document_start",
       "world": "ISOLATED"
     },
     {
-      "matches": ["*://*.zapier.com/*"],
-      "js": ["src/platforms/zapier-content.js", "src/content.js"],
+      "matches": [
+        "*://*.zapier.com/*"
+      ],
+      "js": [
+        "src/platforms/zapier-content.js",
+        "src/content.js"
+      ],
       "run_at": "document_start",
       "world": "ISOLATED"
     }

@@ -12,6 +12,15 @@ import {
   ZAPIER_SYSTEM_PROMPT
 } from "../src/normalizer.js";
 import { PLATFORMS } from "../src/platforms/registry.js";
+import {
+  OUTCOMES,
+  recordVisit,
+  isSettled,
+  settledIds,
+  ledgerStats,
+  clearLedger,
+  partitionByLedger
+} from "../src/rewrite-ledger.js";
 
 const ZAPIER = PLATFORMS.zapier;
 
@@ -31,6 +40,19 @@ const check = (name, fn) => {
     console.log(`  FAIL ${name}\n       ${(e && e.message) || e}`);
   }
 };
+
+const checkAsync = async (name, fn) => {
+  try {
+    await fn();
+    passed += 1;
+    console.log(`  ok   ${name}`);
+  } catch (e) {
+    failures.push({ name, message: (e && e.message) || String(e) });
+    console.log(`  FAIL ${name}\n       ${(e && e.message) || e}`);
+  }
+};
+
+const readLedgerForTest = async () => (await chrome.storage.local.get("rewrite_ledger")).rewrite_ledger || {};
 
 const eq = (actual, expected, what) => {
   if (actual !== expected) throw new Error(`${what}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
@@ -54,7 +76,14 @@ const loadContentParsers = () => {
   };
   globalThis.__PCE_EXPORT_FOR_TESTS__ = true;
 
-  for (const rel of [["src", "platforms", "pabbly-content.js"], ["src", "content.js"]]) {
+  for (const rel of [
+    ["src", "rewrite.js"],
+    ["src", "platforms", "pabbly-fields.js"],
+    ["src", "platforms", "pabbly-history.js"],
+    ["src", "platforms", "pabbly-api.js"],
+    ["src", "platforms", "pabbly-content.js"],
+    ["src", "content.js"]
+  ]) {
     new Function(readFileSync(join(ROOT, ...rel), "utf8"))();
   }
 
@@ -80,7 +109,27 @@ const fixture = (file) => {
   return document.querySelector(".webhook_api_mapping_div");
 };
 
+// linkedom returns a textarea's RAW source from `.value` ("a&lt;br&gt;b"), where a real browser
+// returns the parsed text ("a<br>b"). The rewrite rule's entire safety property is that it skips tag
+// interiors, so without correcting this the guard would never be exercised by a fixture. Decoding
+// into textContent makes `.value` report what Chrome would. One pass only: `&amp;lt;` must land on
+// `&lt;` (a code body's own `<` really is stored escaped), not on `<`.
+const ENTITIES = { "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&amp;": "&" };
+const asBrowserValues = (document) => {
+  document.querySelectorAll("textarea").forEach((ta) => {
+    ta.textContent = (ta.textContent || "").replace(/&(?:lt|gt|quot|#39|amp);/g, (m) => ENTITIES[m]);
+  });
+  return document;
+};
+
+const stepFixture = (file) => {
+  const html = readFileSync(join(HERE, "fixtures", file), "utf8");
+  const { document } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+  return asBrowserValues(document).querySelector(".webhook_api_mapping_div");
+};
+
 const findMapping = (mappings, field) => mappings.find((m) => m.field === field);
+const findField = (fields, name) => fields.find((f) => f.field === name);
 
 const countDeep = (steps) =>
   (steps || []).reduce(
@@ -196,6 +245,531 @@ console.log("\nValue cleanup and references");
 
   check("returns null when there are no references", () => {
     eq(api.extractRefs("just a plain value"), null, "extractRefs");
+  });
+}
+
+console.log("\nRewrite rule — tag-safe host replacement");
+{
+  const rw = globalThis.__PCE_TEST_REWRITE__;
+  const RULE = rw.RULES.tutorcruncherHost;
+
+  check("rewrites the URL text and leaves the mapping chip byte-identical", () => {
+    const chip =
+      '<span class="dynamic_value" contenteditable="false" data-attr="4922054<=-+*/@/*+-=>result">5. Result : filip_par@tutorax.com<!--endofdynamic_value--></span>';
+    const res = rw.applyToValue(`https://secure.tutorcruncher.com/api/clients/?user__email=${chip}`, RULE);
+    eq(res.hits.length, 1, "hit count");
+    eq(res.value, `https://app.tutorcruncher.com/api/clients/?user__email=${chip}`, "rewritten value");
+    truthy(res.value.includes(chip), "chip survived untouched");
+  });
+
+  // The destructive case: a chip's data-attr is a field path Pabbly parses. If the search string ever
+  // appears inside a tag it must be reported and NOT written, or the mapping silently unbinds.
+  check("refuses to write inside a tag and reports it instead", () => {
+    const v = '<span class="dynamic_value" data-attr="secure.tutorcruncher.com">x</span>';
+    const res = rw.applyToValue(v, RULE);
+    eq(res.hits.length, 0, "no writable hits");
+    eq(res.blocked.length, 1, "blocked hit reported");
+    eq(res.value, v, "value untouched");
+  });
+
+  check("rewrites every occurrence in a code body, across <br> line breaks", () => {
+    const code =
+      "const A = 'https://secure.tutorcruncher.com/api/contractors/';<br>const B = \"https://secure.tutorcruncher.com/api/clients/\";";
+    const res = rw.applyToValue(code, RULE);
+    eq(res.hits.length, 2, "hit count");
+    eq(/secure\.tutorcruncher\.com/.test(res.value), false, "no old host left");
+    eq((res.value.match(/app\.tutorcruncher\.com/g) || []).length, 2, "both rewritten");
+    truthy(res.value.includes("<br>"), "line break preserved");
+  });
+
+  check("respects hostname label boundaries", () => {
+    eq(rw.scanText("https://notsecure.tutorcruncher.com/x", RULE).length, 0, "prefixed label");
+    eq(rw.scanText("https://eu.secure.tutorcruncher.com/x", RULE).length, 0, "parent label");
+    eq(rw.scanText("https://secure.tutorcruncher.community/x", RULE).length, 0, "suffixed TLD");
+    eq(rw.scanText("https://secure.tutorcruncher.com/x", RULE).length, 1, "exact host");
+    eq(rw.scanText("SECURE.TutorCruncher.COM/x", RULE).length, 1, "case-insensitive");
+  });
+
+  // The exact stored value from a live "API (Pabbly) : Execute API Request" step, copied out of the
+  // hidden textarea. This is the string the apply pass has to transform correctly.
+  const REAL =
+    'https://secure.tutorcruncher.com/api/clients/?user__email=<span class="dynamic_value" contenteditable="false" data-attr="0<=-+*/@/*+-=>email">1. Email : mamourtestingsp@tutorax.com<!--endofdynamic_value--></span>';
+
+  check("rewrites the real endpoint value and preserves the chip exactly", () => {
+    const res = rw.applyToValue(REAL, RULE);
+    eq(res.hits.length, 1, "hit count");
+    eq(
+      res.value,
+      'https://app.tutorcruncher.com/api/clients/?user__email=<span class="dynamic_value" contenteditable="false" data-attr="0<=-+*/@/*+-=>email">1. Email : mamourtestingsp@tutorax.com<!--endofdynamic_value--></span>',
+      "rewritten value"
+    );
+    truthy(res.value.includes('data-attr="0<=-+*/@/*+-=>email"'), "data-attr byte-identical");
+    truthy(res.value.includes("<!--endofdynamic_value-->"), "end marker intact");
+  });
+
+  // A data-attr containing a literal `>` is what breaks naive tag matching: everything after that inner
+  // `>` looks like text, so a match inside the attribute would be rewritten and the mapping unbound.
+  check("treats an attribute containing '>' as part of the tag", () => {
+    const v = '<span class="dynamic_value" data-attr="0<=-+*/@/*+-=>secure.tutorcruncher.com">x</span>';
+    const res = rw.applyToValue(v, RULE);
+    eq(res.hits.length, 0, "no writable hits inside the attribute");
+    eq(res.blocked.length, 1, "reported as blocked");
+    eq(res.value, v, "value untouched");
+  });
+
+  check("leaves a value with no match completely alone", () => {
+    const v = "https://app.tutorcruncher.com/api/clients/?user__email=x";
+    const res = rw.applyToValue(v, RULE);
+    eq(res.hits.length, 0, "hits");
+    eq(res.value, v, "value");
+  });
+}
+
+console.log("\nField enumeration — API endpoint step");
+{
+  const fields = globalThis.__PCE_TEST_FIELDS__;
+  const RULE = globalThis.__PCE_TEST_REWRITE__.RULES.tutorcruncherHost;
+  const root = stepFixture("pabbly-api-endpoint-url.html");
+  const collected = fields.collectFields(root);
+  const scan = fields.scanStep(root, RULE);
+
+  check("names the endpoint URL field and detects its TinyMCE editor", () => {
+    const f = findField(collected, "API Endpoint URL");
+    truthy(f, "API Endpoint URL field");
+    eq(f.editor, "tinymce", "editor");
+    eq(f.elementId, "textarea-1027297472178593172920555399021185119037", "element id");
+    truthy(f.value.startsWith("https://secure.tutorcruncher.com/api/clients/"), "value read");
+  });
+
+  check("collects body params and header values", () => {
+    truthy(findField(collected, "callback_url"), "callback_url param");
+    truthy(findField(collected, "Header: Referer"), "Referer header");
+    eq(findField(collected, "Header: Referer").editor, "input", "header editor");
+  });
+
+  // The response preview is captured test output, not configuration. Writing it would be meaningless
+  // at best and would clobber a step's recorded sample at worst.
+  check("excludes the captured test-response preview", () => {
+    eq(collected.some((f) => /"status":200/.test(f.value)), false, "response textarea collected");
+  });
+
+  // The step's mapping dropdowns contain the exact host being searched for, in <option> text.
+  check("never treats mapping-dropdown options as fields", () => {
+    eq(collected.some((f) => /1\. Permalink/.test(f.value)), false, "dropdown option collected");
+    eq(scan.fields.some((f) => /Permalink/.test(f.field)), false, "dropdown option scanned");
+  });
+
+  check("scan finds exactly the three real occurrences", () => {
+    eq(scan.fields.length, 3, "fields with hits");
+    eq(findField(scan.fields, "API Endpoint URL").count, 1, "endpoint hits");
+    eq(findField(scan.fields, "callback_url").count, 1, "param hits");
+    eq(findField(scan.fields, "Header: Referer").count, 1, "header hits");
+  });
+
+  check("scan carries reviewable before/after per field", () => {
+    const f = findField(scan.fields, "API Endpoint URL");
+    truthy(f.before.includes("secure.tutorcruncher.com"), "before");
+    truthy(f.after.includes("app.tutorcruncher.com"), "after");
+    eq(/(^|[^.\w])secure\.tutorcruncher\.com/.test(f.after), false, "old host gone from after");
+    truthy(f.contexts[0].includes("tutorcruncher"), "context excerpt");
+  });
+
+  check("locates the per-step Save button", () => {
+    const btn = fields.saveButton(root);
+    truthy(btn, "save button");
+    truthy(/save_only_curr_api_data/.test(btn.getAttribute("onclick")), "save handler");
+  });
+
+  check("reads the step's identity for the report", () => {
+    const id = fields.stepIdentity(root);
+    eq(id.indexLabel, "6", "index");
+    eq(id.app, "API (Pabbly)", "app");
+    eq(id.title, "Get Client info from TC", "title");
+    eq(id.stepId, "IjU3NjAwNTZiMDYzNDA0MzI1MjY5NTUzNzUxMzMi_pc", "step id");
+  });
+}
+
+console.log("\nField enumeration — Code (Pabbly) step");
+{
+  const fields = globalThis.__PCE_TEST_FIELDS__;
+  const RULE = globalThis.__PCE_TEST_REWRITE__.RULES.tutorcruncherHost;
+  const root = stepFixture("pabbly-code-step.html");
+  const collected = fields.collectFields(root);
+  const scan = fields.scanStep(root, RULE);
+
+  check("treats the code body as a TinyMCE field, flagged as code", () => {
+    const f = findField(collected, "JavaScript Code");
+    truthy(f, "JavaScript Code field");
+    eq(f.editor, "tinymce", "editor");
+    eq(f.code, true, "code flag");
+  });
+
+  // A code step ships a hidden input.curr_api_url whose value is the literal "method_url".
+  check("does not mistake the hidden curr_api_url input for an endpoint field", () => {
+    eq(collected.some((f) => f.value === "method_url"), false, "method_url collected");
+    eq(findField(collected, "API Endpoint URL"), undefined, "phantom endpoint field");
+  });
+
+  check("rewrites the host inside the code body only", () => {
+    const f = findField(scan.fields, "JavaScript Code");
+    truthy(f, "code body hit");
+    eq(f.count, 1, "hit count");
+    truthy(f.after.includes("'https://app.tutorcruncher.com/api/contractors/'"), "rewritten URL");
+  });
+
+  check("preserves the chip, the <br> breaks and the escaped comparison operator", () => {
+    const f = findField(scan.fields, "JavaScript Code");
+    truthy(f.after.includes('data-attr="0<=-+*/@/*+-=>events'), "dynamic_value chip intact");
+    truthy(f.after.includes("pabbly-connect-linebreak"), "blank-line spans intact");
+    truthy(f.after.includes("data.count &lt; 1"), "code's own escaped < untouched");
+  });
+
+  check("ignores the option and response-preview copies of the old host", () => {
+    eq(scan.fields.length, 1, "only the code body has a writable hit");
+  });
+}
+
+console.log("\nTask History — inventory from the run log");
+{
+  const history = globalThis.__PCE_TEST_HISTORY__;
+  const html = readFileSync(join(HERE, "fixtures", "pabbly-task-history.html"), "utf8");
+  const { document: doc } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+  const rows = history.scrapeRows(doc);
+
+  check("reads one entry per execution row", () => {
+    eq(rows.length, 5, "row count");
+    eq(rows[0].name, "H_E_03_RP_Send_Confirmation_Email_After_Hireflix_Interview", "name");
+    eq(rows[0].folder, "03 - Edpulse", "folder");
+    eq(rows[0].id, "IjU3NjUwNTY0MDYzNTA0MzM1MjZjNTUzZDUxM2Ei_pc", "workflow id from href");
+    eq(rows[0].status, "Success", "status");
+    eq(rows[0].stepCount, 2, "step count");
+  });
+
+  check("keeps an ampersand in a workflow name intact", () => {
+    eq(rows[2].name, "V2 - Send email after job application from Indeed & other job boards", "name");
+  });
+
+  // Found by running the parser against a real saved page: this cell's aria-label is a tooltip
+  // ("Click here to view task details in brief."), not a "Label: value" pair, so trusting the label
+  // returned that sentence as the Task History ID.
+  check("reads the Task History ID, not the tooltip on its cell", () => {
+    eq(rows[0].historyId, "IjU3NjYwNTZjMDYzMTA0MzA1MjZjNTUzNDUxMzc1MTY1NTQzNTBmMzci_pc", "history id");
+  });
+
+  check("keeps the execution timezone separate from the timestamp", () => {
+    eq(rows[0].executedAt, "Aug 05, 2026 07:59:11", "timestamp");
+    eq(rows[0].timezone, "(UTC -04:00) America/New_York", "timezone");
+  });
+
+  // The table is a run log: the same workflow appears once per execution. Queueing it unfolded would
+  // re-crawl the busiest workflows dozens of times.
+  check("folds repeated executions into one workflow each", () => {
+    const wfs = history.foldByWorkflow(rows);
+    eq(wfs.length, 4, "unique workflows");
+    const contractor = wfs.find((w) => w.name === "Contractor Added Digits");
+    eq(contractor.runs, 2, "run count");
+    eq(contractor.statuses.Success, 1, "success runs");
+    eq(contractor.statuses.Partial, 1, "partial runs");
+    eq(contractor.folder, "Tipalti", "folder");
+  });
+
+  // Step count is per RUN, not per workflow — routers and filters change how much executes each time.
+  check("keeps the largest step count across a workflow's runs", () => {
+    const contractor = history.foldByWorkflow(rows).find((w) => w.name === "Contractor Added Digits");
+    eq(contractor.stepCount, 31, "must be the max of 13 and 31, not the first seen");
+  });
+
+  check("reports the most recent execution per workflow", () => {
+    const contractor = history.foldByWorkflow(rows).find((w) => w.name === "Contractor Added Digits");
+    eq(contractor.lastRun, "Aug 05, 2026 07:56:00", "last run is the later of the two");
+  });
+
+  check("summarizes folders for the queue preview", () => {
+    const { folders, workflows } = history.scrapeHistory(doc);
+    eq(workflows.length, 4, "workflow count");
+    eq(folders["03 - Edpulse"], 2, "Edpulse count");
+    eq(folders["Tipalti"], 1, "Tipalti count");
+  });
+
+  check("reads the real scale of the run log off the pagination footer", () => {
+    const p = history.readPagination(doc);
+    truthy(p, "pagination");
+    eq(p.totalRows, 24052, "total rows");
+    eq(p.totalPages, 2406, "total pages");
+    eq(p.pageSize, 10, "page size");
+    eq(p.currentPage, 1, "current page");
+    eq(p.rangeFrom, 1, "range from");
+    eq(p.rangeTo, 10, "range to");
+    eq(p.hasNext, true, "next enabled");
+  });
+
+  // 24052 rows in the footer against 5 in the DOM must never read as a full inventory.
+  check("marks a single page as incomplete coverage", () => {
+    const { coverage } = history.scrapeHistory(doc);
+    truthy(coverage, "coverage");
+    eq(coverage.seenRows, 5, "seen rows");
+    eq(coverage.totalRows, 24052, "total rows");
+    eq(coverage.complete, false, "must not claim completeness");
+  });
+}
+
+console.log("\nStep readiness after Pabbly swaps the node");
+{
+  // The bug this pins: clicking a step header makes Pabbly replace the step's node (jQuery replaceWith
+  // in its getFullActionStepHtml handler). Any reference taken before the click is detached, and its
+  // stale subtree reports offsetParent === null forever — so a visibly-open step was reported as
+  // "never loaded", 48 of 49 times, and the scan produced a false all-clear.
+  const html = readFileSync(join(HERE, "fixtures", "pabbly-api-endpoint-url.html"), "utf8");
+  const { document: doc } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+  const root = doc.querySelector(".webhook_api_mapping_div");
+
+  check("an attached step with a populated body is ready", () => {
+    truthy(root, "step present");
+    eq(root.isConnected, true, "attached");
+    truthy(root.querySelector(".card-body .form-group"), "body has fields");
+  });
+
+  check("a detached step is detectable rather than waited on", () => {
+    const id = root.getAttribute("data_curr_api_index");
+    truthy(id, "step carries data_curr_api_index — the handle that survives the swap");
+
+    root.remove();
+    eq(root.isConnected, false, "removed node reports itself detached");
+    // Which is what makes re-lookup possible instead of polling the dead reference.
+    eq(doc.querySelector(`.webhook_api_mapping_div[data_curr_api_index="${id}"]`), null, "gone from the document");
+  });
+}
+
+console.log("\nTask Usage by Workflows — the authoritative catalogue");
+{
+  const history = globalThis.__PCE_TEST_HISTORY__;
+  const html = readFileSync(join(HERE, "fixtures", "pabbly-task-usage.html"), "utf8");
+  const { document: doc } = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
+  const rows = history.scrapeUsageRows(doc);
+
+  check("reads one row per workflow with its usage", () => {
+    eq(rows.length, 2, "row count");
+    eq(rows[0].name, "Add data to GS - Multipage Form (FR)", "name");
+    eq(rows[0].folder, "Home", "folder");
+    eq(rows[0].tasks, 7855, "tasks consumed");
+    eq(rows[0].freeTasks, 7071, "free tasks");
+  });
+
+  // Active/Inactive is information the run log cannot give at all.
+  check("distinguishes Active from Inactive", () => {
+    eq(rows[0].active, true, "row 1 active");
+    eq(rows[0].status, "Active", "row 1 status");
+    eq(rows[1].active, false, "row 2 inactive");
+    eq(rows[1].status, "Inactive", "row 2 status");
+  });
+
+  check("reads the last-executed timestamp without its timezone suffix", () => {
+    eq(rows[0].lastExecuted, "Aug 05, 2026 09:04:06", "timestamp");
+    eq(rows[0].timezone, "(UTC -04:00) America/New_York", "timezone");
+  });
+
+  // Long names are truncated and carry a "Workflow Name:" aria-label; short ones have only text.
+  check("reads a truncated long name", () => {
+    eq(rows[1].name, "Update -Suivi des heures- when tutor is added/removed & status changes", "long name");
+    eq(rows[1].folder, "Job Org Tracking - General", "folder");
+  });
+
+  // The blocker: no <a href> in these rows, so ids must come from React, never from the DOM.
+  check("reports no id from the DOM alone", () => {
+    eq(rows[0].id, null, "row 1 id");
+    eq(rows[1].id, null, "row 2 id");
+  });
+
+  check("recognizes the usage tab by its columns and missing links", () => {
+    eq(history.isUsageTab(doc), true, "usage tab detected");
+  });
+
+  check("reads the catalogue's true size — 276 workflows, not 24k runs", () => {
+    const p = history.readPagination(doc);
+    eq(p.totalRows, 276, "total workflows");
+    eq(p.totalPages, 28, "total pages");
+    eq(p.pageSize, 10, "page size");
+  });
+}
+
+console.log("\nPabbly v2 REST backend — catalogue in one request");
+{
+  const api = globalThis.__PCE_TEST_PABBLY_API__;
+  const REC = (over = {}) => ({
+    _id: "IjU3NjUwNTZhMDYzNTA0MzI1MjZkNTUzNzUxMzQi_pc",
+    name: "Add data to GS - Multipage Form (FR)",
+    folderName: "Home",
+    status: "active",
+    taskConsumption: 7855,
+    freeTasks: 7071,
+    ...over
+  });
+
+  // The envelope is {status, message, data}, but whether records sit at data, data.workflows or deeper
+  // is unknown and may differ per endpoint — so discovery is by content, not by field name.
+  check("finds the record array wherever it sits in the envelope", () => {
+    const shapes = {
+      "data": { status: "success", data: [REC()] },
+      "data.workflows": { status: "success", data: { workflows: [REC()] } },
+      "data.rows": { status: "success", data: { rows: [REC()], total: 276 } },
+      "data.result.items": { data: { result: { items: [REC()] } } }
+    };
+    Object.entries(shapes).forEach(([path, payload]) => {
+      const hit = api.findRecordArray(payload);
+      truthy(hit, `${path}: found`);
+      eq(hit.path, path, `${path}: discovered path`);
+    });
+  });
+
+  check("maps a record onto the canonical shape", () => {
+    const w = api.recordFrom(REC());
+    eq(w.id, "IjU3NjUwNTZhMDYzNTA0MzI1MjZkNTUzNzUxMzQi_pc", "id");
+    eq(w.name, "Add data to GS - Multipage Form (FR)", "name");
+    eq(w.folder, "Home", "folder");
+    eq(w.active, true, "active");
+    eq(w.tasks, 7855, "tasks");
+  });
+
+  // A folder id has the same `_pc` shape as a workflow id, so precedence has to be explicit or the
+  // queue would navigate to folders.
+  check("never mistakes a folder id for the workflow id", () => {
+    const w = api.recordFrom({
+      folderId: "IjU3NjAwNTZiMDYzNDA0MzI1MjY5NTUzNzUxMzMi_pc",
+      _id: "IjU3NjUwNTZmMDYzZTA0Mzc1MjZmNTUzMTUxMzEi_pc",
+      name: "Contractor Added Digits",
+      folderName: "Tipalti"
+    });
+    eq(w.id, "IjU3NjUwNTZmMDYzZTA0Mzc1MjZmNTUzMTUxMzEi_pc", "workflow id");
+    eq(w.folder, "Tipalti", "folder name");
+  });
+
+  check("reads Active/Inactive however it is encoded", () => {
+    eq(api.recordFrom(REC({ status: "active" })).active, true, "string active");
+    eq(api.recordFrom(REC({ status: "inactive" })).active, false, "string inactive");
+    eq(api.recordFrom({ _id: REC()._id, name: "x", isActive: true }).active, true, "boolean");
+    eq(api.recordFrom({ _id: REC()._id, name: "x", active: 0 }).active, false, "0/1");
+  });
+
+  check("prefers the complete array over a shorter one in the same payload", () => {
+    const all = [REC({ _id: "IjU3NjUwNTZhMDYzNTA0MzI1MjZkNTUzNzUxMzQi_pc" }), REC({ _id: "IjU3NjYwNTZhMDYzNTA0MzQ1MjY1NTUzMjUxMzYi_pc" })];
+    const hit = api.findRecordArray({ data: { top: [all[0]], everything: all } });
+    eq(hit.arr.length, 2, "must pick the longer array");
+  });
+
+  check("rejects an array that is not records", () => {
+    eq(api.findRecordArray({ data: [{ label: "no id here" }, { label: "still none" }] }), null, "no id array");
+    eq(api.findRecordArray({ data: [1, 2, 3] }), null, "primitives");
+  });
+
+  check("reads the grand total, not a per-page count", () => {
+    eq(api.findTotal({ data: { count: 10, totalRecords: 276 } }), 276, "grand total wins");
+    eq(api.findTotal({ data: { rows: [] } }), null, "no total present");
+  });
+
+  // One malformed row must not disqualify the catalogue, but it must not reach the queue either. The
+  // array has to clear the 80% id majority to be recognised at all, so this uses 4-of-5.
+  check("keeps a catalogue with one malformed row, minus that row", () => {
+    const ids = [
+      "IjU3NjUwNTZhMDYzNTA0MzI1MjZkNTUzNzUxMzQi_pc",
+      "IjU3NjYwNTZhMDYzNTA0MzQ1MjY1NTUzMjUxMzYi_pc",
+      "IjU3NjUwNTZmMDYzZTA0Mzc1MjZmNTUzMTUxMzEi_pc",
+      "IjU3NjAwNTZiMDYzNDA0MzI1MjY5NTUzNzUxMzMi_pc"
+    ];
+    const out = api.parseCatalogue({
+      data: [...ids.map((id) => REC({ _id: id })), { name: "orphan with no id" }]
+    });
+    eq(out.total, 5, "array length seen");
+    eq(out.workflows.length, 4, "the id-less row is dropped from the queue");
+  });
+
+  // Below that majority it is not treated as a catalogue at all — better to fall through to another
+  // endpoint than to build a queue out of something that only half looks like workflows.
+  check("refuses an array that mostly lacks ids", () => {
+    eq(api.findRecordArray({ data: [REC(), { name: "orphan" }] }), null, "50% is not a catalogue");
+  });
+
+  check("builds a usage URL that asks for everything on one page", () => {
+    const url = api.usageUrl(300);
+    truthy(url.includes("limit=300"), "limit");
+    truthy(url.includes("page=1"), "page");
+    truthy(url.includes("workflowStatus=all"), "status filter cleared");
+    truthy(url.includes("filterByFolderId=all"), "folder filter cleared");
+  });
+}
+
+console.log("\nRewrite ledger — fix each workflow once, ever");
+{
+  // The ledger is the only stateful piece, so it gets a real in-memory chrome.storage.local rather
+  // than a mock of its own methods: the eviction and merge logic has to run against actual round-trips.
+  const memStore = {};
+  globalThis.chrome = globalThis.chrome || {};
+  globalThis.chrome.storage = {
+    local: {
+      get: async (k) => (Object.prototype.hasOwnProperty.call(memStore, k) ? { [k]: memStore[k] } : {}),
+      set: async (o) => {
+        Object.assign(memStore, o);
+      },
+      remove: async (k) => {
+        delete memStore[k];
+      }
+    }
+  };
+
+  await clearLedger();
+
+  await checkAsync("settles a fixed workflow so it is never reopened", async () => {
+    await recordVisit({ id: "wf_a", name: "Contractor Added Digits", outcome: OUTCOMES.fixed, fieldsChanged: 3 });
+    eq(await isSettled("wf_a"), true, "fixed is settled");
+  });
+
+  // A workflow scanned and found clean must also never be revisited, or the pass never converges.
+  await checkAsync("settles a clean workflow too", async () => {
+    await recordVisit({ id: "wf_b", name: "Already app.tutorcruncher", outcome: OUTCOMES.clean });
+    eq(await isSettled("wf_b"), true, "clean is settled");
+  });
+
+  // A failure is the one outcome that must stay open, so a transient error gets another attempt.
+  await checkAsync("leaves a failed workflow unsettled for retry", async () => {
+    await recordVisit({ id: "wf_c", name: "Timed out", outcome: OUTCOMES.failed, error: "timeout" });
+    eq(await isSettled("wf_c"), false, "failed must be retried");
+    eq(await isSettled("wf_unknown"), false, "never-seen workflow");
+  });
+
+  await checkAsync("counts repeat visits without duplicating the entry", async () => {
+    await recordVisit({ id: "wf_c", outcome: OUTCOMES.fixed, fieldsChanged: 1 });
+    const led = await readLedgerForTest();
+    eq(led.wf_c.visits, 2, "visit count");
+    eq(led.wf_c.name, "Timed out", "name carried forward from the earlier visit");
+    eq(await isSettled("wf_c"), true, "now settled");
+  });
+
+  // The whole point: an old execution row for an already-fixed workflow contributes no work.
+  await checkAsync("drops already-settled workflows out of a fresh page's queue", async () => {
+    const settled = await settledIds();
+    const page = [
+      { id: "wf_a", name: "Contractor Added Digits" },
+      { id: "wf_b", name: "Already app.tutorcruncher" },
+      { id: "wf_new", name: "Never seen" }
+    ];
+    const { queue, alreadyDone, freshCount } = partitionByLedger(page, settled);
+    eq(freshCount, 1, "fresh count");
+    eq(queue[0].id, "wf_new", "only the unseen workflow is queued");
+    eq(alreadyDone.length, 2, "already done");
+  });
+
+  // A page of nothing but old runs is what tells the crawler it can stop paging.
+  await checkAsync("reports zero fresh work for a page of only old runs", async () => {
+    const settled = await settledIds();
+    const { freshCount } = partitionByLedger([{ id: "wf_a" }, { id: "wf_b" }], settled);
+    eq(freshCount, 0, "a fully settled page yields no work");
+  });
+
+  await checkAsync("summarizes the ledger for the panel", async () => {
+    const stats = await ledgerStats();
+    eq(stats.total, 3, "total");
+    eq(stats.counts.fixed, 2, "fixed");
+    eq(stats.counts.clean, 1, "clean");
+    eq(stats.fieldsChanged, 4, "fields changed");
   });
 }
 

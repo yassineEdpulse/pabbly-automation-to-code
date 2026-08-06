@@ -270,3 +270,54 @@ button.ghost { background: transparent; color: var(--muted); }
 }
 .preview:empty { display: none; }
 
+
+/* --- Find & replace pass ------------------------------------------------------------------------
+   Collapsed by default: this is the one part of the panel that writes to the live account, so it
+   should never be the thing a stray click lands on. */
+.fixer {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.fixer summary { cursor: pointer; font-weight: 600; }
+.fixer[open] summary { margin-bottom: 10px; }
+.fx-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin: 8px 0 4px;
+}
+.fixer .search { margin-bottom: 0; }
+
+/* Apply is destructive and irreversible — Pabbly has no undo — so it reads as such and stays
+   disabled until a scan has produced something to apply. */
+button.danger { background: var(--err); border-color: var(--err); color: var(--bg); font-weight: 600; }
+button.danger:hover:not(:disabled) { filter: brightness(1.08); }
+button.danger:disabled { background: transparent; border-color: var(--border); color: var(--muted); font-weight: 400; cursor: not-allowed; }
+
+.fx-ledger:empty, .fx-report:empty { display: none; }
+.fx-ledger { color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+.fx-report {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+}
+.fx-wf { margin-bottom: 8px; }
+.fx-wf:last-child { margin-bottom: 0; }
+.fx-wf-name { font-weight: 600; word-break: break-word; }
+.fx-wf-folder { color: var(--muted); }
+.fx-field { padding-left: 10px; margin-top: 3px; word-break: break-all; }
+.fx-field-name { color: var(--accent); }
+.fx-ctx { color: var(--muted); }
+.fx-ok { color: var(--ok); }
+.fx-bad { color: var(--err); }
+.fx-warn { color: var(--warn); }
+.fx-check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; margin: 8px 0 4px; cursor: pointer; }
+.fx-check input { cursor: pointer; }
