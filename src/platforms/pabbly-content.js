@@ -677,19 +677,36 @@
     LOG(`expandAndParseAll: ${roots.length} top-level step wrapper(s) found`, before);
     const rich = new Map();
     const debug = [];
-    let idx = 0;
-    for (const root of roots) {
-      idx++;
-      const header = root.querySelector(".card-header");
-      const body = root.querySelector(".card-body");
-      const isOpen = body && body.offsetParent !== null;
+    let unloaded = 0;
+    for (let idx0 = 0; idx0 < roots.length; idx0++) {
+      const idx = idx0 + 1;
+      let root = roots[idx0];
+      if (!root || root.isConnected === false) root = stepRoots()[idx0];
+      if (!root) continue;
+
+      const stepId = root.getAttribute("data_curr_api_index");
+      const isOpen = bodyReady(root);
       const headerText = cleanText(root.querySelector(".curr_app_name")) || "(no header)";
       LOG(`step ${idx}/${roots.length}: "${headerText}" — open=${isOpen}, clicking=${!isOpen}`);
-      if (!isOpen && header) {
-        header.click();
-        await delay(stepDelay);
+
+      if (!isOpen) {
+        const header = root.querySelector(".card-header");
+        if (header) {
+          header.click();
+          await delay(stepDelay);
+        }
+        // The arriving config replaces the step's node, so the clicked reference is detached and its
+        // stale subtree never reports ready. The extractor used to survive this only because the
+        // captured {status, html} responses were merged in afterwards — where no capture matched, the
+        // step came out with no mappings AND no text, indistinguishable from a step with no config.
+        const fresh = await reacquireStep(stepId, idx0);
+        if (fresh) root = fresh;
       }
-      await waitForBody(root);
+
+      if (!bodyReady(root)) {
+        unloaded += 1;
+        LOG(`step ${idx}: config never loaded — relying on captured HTML if any arrives`);
+      }
       const router = looksLikeRouter(root);
       if (router) {
         const loaded = await waitForRouter(root);
@@ -708,7 +725,7 @@
         clicked: !isOpen
       });
     }
-    return { rich, total: roots.length, debug, outline: outline0, census: { before, after: census() } };
+    return { rich, total: roots.length, unloaded, debug, outline: outline0, census: { before, after: census() } };
   };
 
   // Full single-workflow capture: expand every step, merge in the step-config HTML the page fetched

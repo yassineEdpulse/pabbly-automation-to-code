@@ -344,6 +344,10 @@ const stepFromParsed = (s, i) => ({
   event: s.event || null,
   rawKeys: [],
   mappings: s.mappings || [],
+  // A step whose config never loaded parses as having no fields, which is indistinguishable in the
+  // export from a step that genuinely has none — the reader cannot tell "nothing configured" from
+  // "nothing read". The extractor already knew (expanded: false) and this was dropping it.
+  ...(s.expanded === false ? { notRead: true } : {}),
   ...(s.filter ? { filter: s.filter } : {}),
   ...(s.text ? { text: s.text } : {}),
   ...(s.routes ? { routes: s.routes.map(routeFromParsed) } : {})

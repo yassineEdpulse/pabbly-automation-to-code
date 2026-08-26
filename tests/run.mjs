@@ -848,6 +848,22 @@ console.log("\nHealth scoring");
     truthy(h.warnings.some((w) => w.code === "action-no-fields"), "action-no-fields warning");
   });
 
+  // "Never opened" and "has no fields" mean opposite things: one is a gap in the capture, the other is a
+  // fact about the automation. Conflating them let a step nobody read pass as a step with nothing in it —
+  // which is exactly what made two steps in a real 121-step export impossible to account for.
+  check("distinguishes a step that was never read from one with no fields", () => {
+    const h = analyzeSteps([
+      { order: 1, app: "Webhook", mappings: [{ field: "a", value: "b" }] },
+      { order: 2, app: "Slack", mappings: [], expanded: false },
+      { order: 3, app: "SMTP", mappings: [] }
+    ]);
+    const notRead = h.warnings.find((w) => w.code === "step-not-read");
+    truthy(notRead, "step-not-read warning");
+    truthy(/never opened/.test(notRead.message), "message says it was not read");
+    truthy(/missing, not empty/.test(notRead.message), "message distinguishes missing from empty");
+    eq(h.warnings.filter((w) => w.code === "action-no-fields").length, 1, "only the genuinely empty step");
+  });
+
   check("flags a router with no routes", () => {
     const h = analyzeSteps([{ order: 1, app: "Router (Pabbly)", mappings: [], routes: [] }]);
     truthy(h.warnings.some((w) => w.code === "router-no-routes"), "router-no-routes warning");

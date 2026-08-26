@@ -63,6 +63,17 @@ const walk = (steps, warnings, counts, where) => {
       return;
     }
 
+    // Said separately from "no field mappings" because they mean opposite things to a reader: one is a
+    // fact about the automation, the other is a gap in the capture. Conflating them let a step nobody
+    // managed to read pass as a step with nothing in it.
+    if (s.expanded === false || s.notRead) {
+      warnings.push({
+        code: "step-not-read",
+        message: `${at} was never opened — its configuration is missing, not empty. Re-capture.`
+      });
+      return;
+    }
+
     if (!hasFields(s)) {
       warnings.push({ code: "action-no-fields", message: `${at} captured no field mappings` });
       return;
