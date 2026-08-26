@@ -91,20 +91,44 @@
   // If one of these reaches a mapping value it is an internal token, never a user-set value.
   const INTERNAL_TOKEN = /<=-\+[\s\S]*?\+-=>/;
 
+  const TEXT_LIMIT = 2500;
+
+  // A <span> tag with quote-aware attribute matching. Both parts matter:
+  //
+  //   - Attribute ORDER is not assumed. The old pattern required class="dynamic_value" to appear before
+  //     data-attr; when Pabbly emitted them the other way round the strip missed entirely.
+  //   - A quoted attribute may contain `>`. data-attr holds field paths like
+  //     `0<=-+*/@/*+-=>events<=-+($@$)+-=>id`, and `[^>]*` stops at that inner `>`, leaving the rest of
+  //     the attribute behind as if it were text.
+  //
+  // Either failure leaves Pabbly's internal path token in the cleaned value, and pushMapping used to
+  // discard the whole field on sight of one — so a code body or an Asana request body simply vanished
+  // from the export while every static field beside it came through, making the loss invisible.
+  const SPAN_TAG = /<\/?span\b[^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/gi;
+  const LINEBREAK_SPAN = /<span\b[^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*class="pabbly-connect-linebreak"[\s\S]*?<\/span>/gi;
+
   const cleanValue = (v) => {
     if (typeof v !== "string") return v;
     return v
-      .replace(/<span class="pabbly-connect-linebreak"[^>]*>[\s\S]*?<\/span>/gi, "\n")
+      .replace(LINEBREAK_SPAN, "\n")
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<!--endofdynamic_value-->/gi, "")
-      .replace(/<span\s+class="dynamic_value"[^>]*data-attr="[^"]*"\s*>/gi, "")
-      .replace(/<\/?span[^>]*>/gi, "")
+      .replace(SPAN_TAG, "")
       .replace(/\{\{\{_map_val_\{\{\{/g, "")
       .replace(/\}\}\}_map_val_\}\}\}/g, "")
       .replace(/data_sign="endofdynamic_value"/gi, "")
       .replace(/[ \t]{2,}/g, " ")
       .trim();
   };
+
+  // Last resort when a token still leaks through: keep the field with the token removed rather than
+  // dropping it. A field that is entirely internal encoding is still worth nothing and is skipped, but
+  // a 200-line code body must never disappear because eight characters of markup were unexpected.
+  const salvageInternal = (v) =>
+    v
+      .replace(/<=-\+[\s\S]*?\+-=>/g, " ")
+      .replace(/\s{2,}/g, " ")
+      .trim();
 
   const extractRefs = (val) => {
     if (typeof val !== "string") return null;
@@ -182,9 +206,15 @@
     const seenMap = new Set();
     const pushMapping = (field, rawVal) => {
       if (!field || rawVal == null) return;
-      const clean = cleanValue(rawVal);
+      let clean = cleanValue(rawVal);
       if (clean === "") return;
-      if (INTERNAL_TOKEN.test(clean)) return;
+      if (INTERNAL_TOKEN.test(clean)) {
+        // Salvage rather than discard. Dropping the field made a missing code body indistinguishable
+        // from a step that genuinely has none — the failure was completely silent in the export.
+        const salvaged = salvageInternal(clean);
+        if (salvaged.length < 3) return;
+        clean = salvaged;
+      }
       const key = `${field}::${clean}`;
       if (seenMap.has(key)) return;
       seenMap.add(key);
@@ -221,8 +251,13 @@
       pushMapping(label, valueFromGroup(g));
     });
 
+    // `text` is the fallback for steps whose config did not parse into mappings, and it is capped to keep
+    // exports usable. It used to cut mid-word with no indication, so a reader relying on it could not tell
+    // a truncated code body from a complete one — the cut is now stated.
     const bodyEl = root.querySelector(".card-body");
-    const text = bodyEl ? cleanText(bodyEl).slice(0, 2500) : "";
+    const fullText = bodyEl ? cleanText(bodyEl) : "";
+    const text =
+      fullText.length > TEXT_LIMIT ? `${fullText.slice(0, TEXT_LIMIT)}…[truncated — read mappings]` : fullText;
     const filter = root.querySelector(".filter_mapping_con") ? parseFilter(root) : null;
     const routes = root.querySelector(".router_mapping_main_div") ? parseRoutesStatic(root) : null;
     return { id, order, indexLabel, app, event, mappings, filter, routes, text };

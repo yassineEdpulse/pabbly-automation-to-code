@@ -237,6 +237,38 @@ console.log("\nValue cleanup and references");
     eq(api.cleanValue("a<br>b"), "a\nb", "cleanValue br");
   });
 
+  // Regression: a chip is stripped regardless of attribute order. The old pattern required
+  // class="dynamic_value" BEFORE data-attr; the other order left Pabbly's internal path token in the
+  // value, and pushMapping then discarded the whole field. Code bodies and Asana request bodies
+  // disappeared from exports while every static field beside them came through, so the loss was silent.
+  check("strips a mapping chip whichever order its attributes are in", () => {
+    const chip = (attrs) => `const ID = "<span ${attrs}>1. Events 0 Subject Id : 2438639<!--endofdynamic_value--></span>";`;
+    const path = "0<=-+*/@/*+-=>events<=-+($@$)+-=>0<=-+($@$)+-=>subject<=-+($@$)+-=>id";
+    const expected = 'const ID = "1. Events 0 Subject Id : 2438639";';
+
+    eq(
+      api.cleanValue(chip(`class="dynamic_value" contenteditable="false" data-attr="${path}"`)),
+      expected,
+      "class before data-attr"
+    );
+    eq(
+      api.cleanValue(chip(`data-attr="${path}" class="dynamic_value" contenteditable="false"`)),
+      expected,
+      "data-attr before class"
+    );
+    eq(api.cleanValue(chip(`data-attr="${path}" class="dynamic_value"`)), expected, "no contenteditable");
+  });
+
+  check("keeps a multi-line code body containing a chip intact", () => {
+    const body =
+      'const URL = "https://app.tutorax.com/clients/";<br>const ID = "<span data-attr="0<=-+*/@/*+-=>id" class="dynamic_value">1. Id : 42<!--endofdynamic_value--></span>";<br>return await go();';
+    const out = api.cleanValue(body);
+    truthy(out.includes("https://app.tutorax.com/clients/"), "URL survived");
+    truthy(out.includes("1. Id : 42"), "chip's readable reference survived");
+    truthy(out.includes("return await go();"), "last line survived");
+    eq(/<=-\+/.test(out), false, "no internal token left to trigger the drop");
+  });
+
   check("extracts multiple distinct references", () => {
     const refs = api.extractRefs("7. User Email : a@b.com and 2. Data 0 Subject Service Id : 948357");
     eq(refs.length, 2, "reference count");
