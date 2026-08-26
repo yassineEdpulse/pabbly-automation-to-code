@@ -1,7 +1,24 @@
 import { analyzeSteps } from "./health.js";
 
 export const SCHEMA_VERSION = 2;
-export const EXTENSION_VERSION = "0.11.6";
+
+// Read from the manifest at runtime rather than hardcoded. As a constant this was a fifth place a
+// release had to be edited, it was silently missed on two bumps in a row, and every export went out
+// stamped with a version three releases old — which makes an exported file impossible to attribute to
+// the code that produced it. The literal below is only reachable outside an extension context (the test
+// suite), and a test asserts it still agrees with manifest.json so it cannot rot unnoticed.
+const FALLBACK_VERSION = "0.13.0";
+
+const manifestVersion = () => {
+  try {
+    const v = chrome.runtime.getManifest().version;
+    return typeof v === "string" && v ? v : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+export const EXTENSION_VERSION = manifestVersion() || FALLBACK_VERSION;
 export const EXTENSION_NAME = "Automation Code Extractor";
 
 const idOf = (platform) => (platform && platform.id) || null;

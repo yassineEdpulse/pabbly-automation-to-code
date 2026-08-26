@@ -9,6 +9,7 @@ import {
   workflowFromParsed,
   domWorkflow,
   SCHEMA_VERSION,
+  EXTENSION_VERSION,
   ZAPIER_SYSTEM_PROMPT
 } from "../src/normalizer.js";
 import { PLATFORMS } from "../src/platforms/registry.js";
@@ -510,6 +511,38 @@ console.log("\nTask History — inventory from the run log");
     eq(coverage.seenRows, 5, "seen rows");
     eq(coverage.totalRows, 24052, "total rows");
     eq(coverage.complete, false, "must not claim completeness");
+  });
+}
+
+console.log("\nVersion sources agree");
+{
+  // A release has to touch five places, and two consecutive bumps missed normalizer's copy — so every
+  // export went out stamped 0.11.6 while the extension was 0.13.0, making a captured file impossible to
+  // attribute to the code that produced it. Asserting them here is what stops that shipping again.
+  const manifest = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf8");
+  const contentSrc = readFileSync(join(ROOT, "src", "content.js"), "utf8");
+  const popupSrc = readFileSync(join(ROOT, "src", "popup.js"), "utf8");
+  const normalizerSrc = readFileSync(join(ROOT, "src", "normalizer.js"), "utf8");
+
+  const pick = (src, re) => (src.match(re) || [])[1] || null;
+
+  check("manifest, package.json and the changelog's latest entry match", () => {
+    eq(pkg.version, manifest.version, "package.json vs manifest.json");
+    eq(pick(changelog, /^## \[([0-9.]+)\]/m), manifest.version, "changelog latest vs manifest.json");
+  });
+
+  // The content script and the panel handshake on this: a mismatch is what tells a user to hard-reload.
+  check("the content-script handshake matches the manifest", () => {
+    eq(pick(contentSrc, /CONTENT_VERSION = "([0-9.]+)"/), manifest.version, "CONTENT_VERSION");
+    eq(pick(popupSrc, /EXPECTED_CONTENT_VERSION = "([0-9.]+)"/), manifest.version, "EXPECTED_CONTENT_VERSION");
+  });
+
+  // Reads the manifest at runtime, so this only pins the out-of-extension fallback the tests exercise.
+  check("the export's version fallback matches the manifest", () => {
+    eq(pick(normalizerSrc, /FALLBACK_VERSION = "([0-9.]+)"/), manifest.version, "FALLBACK_VERSION");
+    eq(EXTENSION_VERSION, manifest.version, "EXTENSION_VERSION as resolved in tests");
   });
 }
 
