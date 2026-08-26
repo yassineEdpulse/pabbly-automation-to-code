@@ -348,6 +348,10 @@ const stepFromParsed = (s, i) => ({
   // export from a step that genuinely has none — the reader cannot tell "nothing configured" from
   // "nothing read". The extractor already knew (expanded: false) and this was dropping it.
   ...(s.expanded === false ? { notRead: true } : {}),
+  // Pabbly's own error, surfaced rather than dropped: a filter whose mapped source was deleted renders
+  // with empty operands, so an absent condition here is a broken filter in the account, not a gap in
+  // the capture — and a reader reimplementing this branch must not assume the condition is missing.
+  ...(s.filterBroken ? { filterMappingBroken: true } : {}),
   ...(s.filter ? { filter: s.filter } : {}),
   ...(s.text ? { text: s.text } : {}),
   ...(s.routes ? { routes: s.routes.map(routeFromParsed) } : {})

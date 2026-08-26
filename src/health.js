@@ -47,11 +47,35 @@ const walk = (steps, warnings, counts, where) => {
     if (isFilterApp(s.app, s)) {
       const groups = s.filter || [];
       const conditions = groups.reduce((n, g) => n + ((g.conditions && g.conditions.length) || 0), 0);
+      const resolved = groups.reduce(
+        (n, g) => n + ((g.conditions || []).filter((c) => !c.unresolved).length),
+        0
+      );
+
+      // Pabbly's own error, not ours: when a filter's mapped source is deleted it renders the row with
+      // an empty Select Label and Value and shows "Error in filter mapping detected". There is nothing
+      // on screen to read, so calling it "no parsed conditions" blamed the capture for a broken filter
+      // in the account — and hid the fact that the branch may no longer gate correctly at runtime.
+      if (s.filterMappingBroken) {
+        warnings.push({
+          code: "filter-mapping-broken",
+          message: `${at} — Pabbly reports its filter mapping is broken (mapped step or key deleted), so the condition is unreadable in the editor. Fix it in Pabbly; this is not a capture gap.`
+        });
+        return;
+      }
+
       if (!conditions) {
         warnings.push({ code: "filter-no-conditions", message: `${at} is a filter with no parsed conditions` });
-      } else {
-        counts.withData += 1;
+        return;
       }
+      if (!resolved) {
+        warnings.push({
+          code: "filter-conditions-unresolved",
+          message: `${at} has ${conditions} condition(s) but no operands were readable — the mapped source is likely gone`
+        });
+        return;
+      }
+      counts.withData += 1;
       return;
     }
 

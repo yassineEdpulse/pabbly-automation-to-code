@@ -260,7 +260,10 @@
       fullText.length > TEXT_LIMIT ? `${fullText.slice(0, TEXT_LIMIT)}…[truncated — read mappings]` : fullText;
     const filter = root.querySelector(".filter_mapping_con") ? parseFilter(root) : null;
     const routes = root.querySelector(".router_mapping_main_div") ? parseRoutesStatic(root) : null;
-    return { id, order, indexLabel, app, event, mappings, filter, routes, text };
+    // Carried on the step so the export can say WHOSE gap it is: Pabbly showing its own
+    // "mapping detected" error is a broken filter in the account, not a capture that failed.
+    const filterBroken = !!(filter || root.querySelector(".filter_mapping_con")) && FILTER_MAPPING_BROKEN.test(fullText);
+    return { id, order, indexLabel, app, event, mappings, filter, filterBroken, routes, text };
   };
 
   const parseRoutesStatic = (root) =>
@@ -314,6 +317,11 @@
     return null;
   };
 
+  // Pabbly's own words when a filter's mapped source is gone. It renders the row with an empty Select
+  // Label and empty Value and shows this banner — so there is genuinely nothing on screen to read, and
+  // reporting it as a parse failure blamed the capture for a broken filter in the account.
+  const FILTER_MAPPING_BROKEN = /Error in filter mapping detected/i;
+
   const parseFilter = (root) => {
     const groups = [];
     root.querySelectorAll(".filter_mapping_con .all_condition_filter_mapping").forEach((groupEl) => {
@@ -327,7 +335,14 @@
         const operator = selectedLabel(rowEl, "logic_map_data");
         const valTa = rowEl.querySelector("textarea.map_data_value");
         const value = valTa ? (valTa.value || valTa.textContent || "").trim() : null;
-        if (field || value) conditions.push({ field, operator, value });
+
+        if (field || value) {
+          conditions.push({ field, operator, value });
+          return;
+        }
+        // A row that exists but has neither operand is still evidence: it says how many conditions the
+        // branch has and how they combine. Dropping it left the filter looking like it had none at all.
+        if (operator) conditions.push({ field: null, operator, value: null, unresolved: true });
       });
       if (conditions.length) groups.push({ joiner, conditions });
     });
@@ -367,6 +382,7 @@
           event: r.event || o.method || null,
           mappings: r.mappings,
           filter: r.filter,
+          filterBroken: r.filterBroken,
           text: r.text,
           routes: r.routes,
           id: r.id,

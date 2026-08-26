@@ -864,6 +864,46 @@ console.log("\nHealth scoring");
     eq(h.warnings.filter((w) => w.code === "action-no-fields").length, 1, "only the genuinely empty step");
   });
 
+  // Pabbly renders a filter whose mapped source was deleted with empty operands plus its own
+  // "Error in filter mapping detected" banner. Reporting that as "no parsed conditions" blamed the
+  // capture for a broken filter in the account — and buried the operational fact that the branch may
+  // no longer gate correctly.
+  check("blames Pabbly, not the capture, for a broken filter mapping", () => {
+    const h = analyzeSteps([
+      { order: 1, app: "Webhook", type: "trigger", mappings: [] },
+      {
+        order: 2,
+        app: "Filter : Canada & USA",
+        type: "filter",
+        mappings: [],
+        filterMappingBroken: true,
+        filter: [{ joiner: "OR", conditions: [{ field: null, operator: "Equal to", value: null, unresolved: true }] }]
+      }
+    ]);
+    const w = h.warnings.find((x) => x.code === "filter-mapping-broken");
+    truthy(w, "filter-mapping-broken warning");
+    truthy(/not a capture gap/.test(w.message), "says it is not a capture gap");
+    eq(h.warnings.some((x) => x.code === "filter-no-conditions"), false, "no misleading parse warning");
+  });
+
+  check("distinguishes unreadable operands from no conditions at all", () => {
+    const unresolved = analyzeSteps([
+      {
+        order: 1,
+        app: "Filter (Pabbly)",
+        type: "filter",
+        filter: [{ joiner: "AND", conditions: [{ field: null, operator: "Equal to", value: null, unresolved: true }] }]
+      }
+    ]);
+    truthy(
+      unresolved.warnings.some((w) => w.code === "filter-conditions-unresolved"),
+      "reports the row exists but its operands do not"
+    );
+
+    const none = analyzeSteps([{ order: 1, app: "Filter (Pabbly)", type: "filter" }]);
+    truthy(none.warnings.some((w) => w.code === "filter-no-conditions"), "still reports a truly empty filter");
+  });
+
   check("flags a router with no routes", () => {
     const h = analyzeSteps([{ order: 1, app: "Router (Pabbly)", mappings: [], routes: [] }]);
     truthy(h.warnings.some((w) => w.code === "router-no-routes"), "router-no-routes warning");
